@@ -221,9 +221,9 @@ jobs:
               console.log('Warning: timeout waiting for initial sheet-diag');
             }
 
-            // Extract initial total from diag (format: "✅ N casos cargados · ...")
+            // Extract initial total from diag (format: "✅ N actualizadas, M nuevas | total: T | ...")
             let totalBefore = null;
-            const totalMatch = initialDiag.match(/✅\s*(\d+)\s*casos/);
+            const totalMatch = initialDiag.match(/total:\s*(\d+)/);
             if (totalMatch) totalBefore = parseInt(totalMatch[1]);
             console.log(`Total before submit: ${totalBefore}`);
 
@@ -274,15 +274,15 @@ jobs:
             await page.click('#nc-submit');
             console.log('Submit clicked. Waiting for response...');
 
-            // Wait for result div to show success or error (max 30s)
+            // Wait for result div to show final success ✅ or error ❌ (not the loading spinner ⏳)
             let resultText = '';
             try {
               await page.waitForFunction(() => {
                 const el = document.getElementById('nc-result');
                 if (!el) return false;
                 const t = el.textContent || '';
-                return t.length > 5;
-              }, { timeout: 30000 });
+                return t.includes('✅') || t.includes('❌') || t.toLowerCase().includes('error');
+              }, { timeout: 35000 });
               resultText = await page.$eval('#nc-result', el => el.textContent || '');
             } catch(e) {
               resultText = await page.$eval('#nc-result', el => el.textContent || '').catch(() => '(not found)');
@@ -361,7 +361,7 @@ jobs:
 
             // Extract updated total
             let totalAfter = null;
-            const totalAfterMatch = updatedDiag.match(/✅\s*(\d+)\s*casos/);
+            const totalAfterMatch = updatedDiag.match(/total:\s*(\d+)/);
             if (totalAfterMatch) totalAfter = parseInt(totalAfterMatch[1]);
             console.log(`Total after submit: ${totalAfter}`);
 
