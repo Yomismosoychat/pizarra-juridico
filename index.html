@@ -204,6 +204,28 @@ body{background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;paddi
 .reclam-sync-btn{background:var(--seguim);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:auto}
 .reclam-sync-btn:hover{opacity:.85}
 .reclam-sync-status{font-size:10px;color:var(--text2);margin-left:8px}
+.nuevo-caso-btn{background:var(--ok,#4caf50);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:4px;white-space:nowrap}
+.nuevo-caso-btn:hover{opacity:.85}
+
+/* ═══ MODAL NUEVO CASO ═══ */
+#nc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9000;align-items:center;justify-content:center}
+#nc-overlay.open{display:flex}
+#nc-modal{background:var(--card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:24px 28px;width:min(520px,96vw);max-height:90vh;overflow-y:auto;position:relative;color:var(--text,#eee)}
+#nc-modal h2{margin:0 0 16px;font-size:15px;font-weight:700;letter-spacing:.02em}
+.nc-field{margin-bottom:12px}
+.nc-field label{display:block;font-size:11px;font-weight:600;color:var(--text2,#aaa);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
+.nc-field input,.nc-field select,.nc-field textarea{width:100%;box-sizing:border-box;background:var(--bg,#111);border:1px solid var(--border,#333);border-radius:6px;color:var(--text,#eee);font-family:inherit;font-size:13px;padding:7px 10px}
+.nc-field textarea{resize:vertical;min-height:60px}
+.nc-field input:focus,.nc-field select:focus,.nc-field textarea:focus{outline:2px solid var(--seguim,#7c6af5);border-color:transparent}
+.nc-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#nc-result{margin-top:12px;font-size:12px;padding:8px 10px;border-radius:6px;display:none}
+#nc-result.ok{background:rgba(76,175,80,.15);border:1px solid var(--ok,#4caf50);color:var(--ok,#4caf50)}
+#nc-result.err{background:rgba(229,57,53,.15);border:1px solid var(--urgent,#e53935);color:var(--urgent,#e53935)}
+.nc-btns{display:flex;gap:10px;margin-top:16px;justify-content:flex-end}
+.nc-btn-cancel{background:transparent;border:1px solid var(--border,#333);color:var(--text2,#aaa);border-radius:6px;padding:7px 18px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+.nc-btn-submit{background:var(--ok,#4caf50);color:#fff;border:none;border-radius:6px;padding:7px 20px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.nc-btn-submit:disabled{opacity:.5;cursor:not-allowed}
+#nc-close{position:absolute;top:12px;right:16px;background:none;border:none;color:var(--text2,#aaa);font-size:18px;cursor:pointer;line-height:1}
 
 /* ═══ JUICIOS VIEW ═══ */
 .juicios-wrap{padding:8px}
@@ -572,7 +594,9 @@ function render(){
     <span class="reclam-sync-status" id="sync-status" style="margin-left:auto"></span>
     <button class="reclam-sync-btn" onclick="syncToSheets()">\u{1F4E4} Sync Sheet</button>
     <button class="reclam-sync-btn" onclick="loadFromSheet()" style="margin-left:4px">\u{2B07}\u{FE0F} Load Sheet</button>
-  </div>`;
+    <button class="nuevo-caso-btn" onclick="openNuevoCaso()" id="btn-nuevo-caso">+ Nuevo caso</button>
+  </div>
+  <div id="sheet-diag" style="font-size:11px;padding:3px 12px 4px;line-height:1.5;word-break:break-all;background:var(--bg2,rgba(255,255,255,.06))"></div>`;
 
   // Forense banner (when pending)
   if(!STATE.forenseReady){
@@ -1511,7 +1535,7 @@ function confirmForense(){
 let saveTimer = null;
 let syncTimer = null;
 function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(doSave, 1500); scheduleSync(); }
-function scheduleSync(){ clearTimeout(syncTimer); syncTimer = setTimeout(syncToSheets, 8000); }
+function scheduleSync(){ clearTimeout(syncTimer); syncTimer = setTimeout(()=>syncToSheets(true), 8000); }
 
 async function doSave(){
   try {
@@ -1542,13 +1566,21 @@ const SYNC_URGENCY_MAP = {"red":"\u{1F534} URGENTE","orange":"\u{1F7E0} PRÓXIMO
 const SYNC_NEXT_MAP = {"actuar":"Actuar YA","esperar":"Vigilar respuesta","preparar":"Preparar juicio","revisar":"Revisar"};
 
 let syncInProgress = false;
-async function syncToSheets(){
+async function syncToSheets(silent){
   if(syncInProgress) return;
   syncInProgress = true;
   const statusEl = document.getElementById("sync-status");
   try {
     const mcp = await window.claude?.use?.("mcp");
-    if(!mcp){ syncInProgress = false; return; }
+    if(!mcp){
+      // Fuera del Artifact (p. ej. GitHub Pages) no hay puente MCP: la escritura
+      // al Sheet es imposible. Antes se abandonaba en silencio y el botón parecía roto.
+      if(!silent){
+        if(statusEl) statusEl.textContent = "\u26A0\uFE0F Sync no disponible aquí";
+        showToast("\u26A0\uFE0F Escritura al Sheet solo disponible en el Artifact de Claude");
+      }
+      syncInProgress = false; return;
+    }
     if(statusEl) statusEl.textContent = "⏳ Sincronizando...";
 
     // Build rows: header + grouped cases with separator rows
@@ -1661,9 +1693,17 @@ async function syncToSheets(){
 
 // ═══ LOAD FROM SHEET (pull, vía CSV público — fusiona por Referencia col. E) ═══
 const SHEET_GID = "953772179"; // pestaña PANEL
-// URL de "Publicar en la Web" (Archivo → Compartir → Publicar en la Web) de la pestaña PANEL.
-// Es distinta del SHEET_ID normal: usar tal cual, no reconstruir a partir del ID del documento.
-const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ-xMMd4mJLtRrbNFo1wyifoibRvDjGIrM5kBn2BptpmNWllqIx0jQOer0FhsN9MSOsJGoBflsna2Wq/pub?gid=" + SHEET_GID + "&single=true&output=csv";
+// PRIMARIA: gviz lee el documento EN VIVO. Solo exige que el Sheet esté compartido como
+// "cualquiera con el enlace puede ver". NO depende de "Publicar en la Web", que puede
+// desactivarse o servir una instantánea cacheada sin avisar.
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:csv&gid=" + SHEET_GID;
+// RESPALDO: URL antigua de "Publicar en la Web", por si gviz fallara.
+const SHEET_CSV_URL_FALLBACK = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ-xMMd4mJLtRrbNFo1wyifoibRvDjGIrM5kBn2BptpmNWllqIx0jQOer0FhsN9MSOsJGoBflsna2Wq/pub?gid=" + SHEET_GID + "&single=true&output=csv";
+
+// ═══ APPS SCRIPT WEB APP — nuevo caso ═══
+const WEBAPP_URL   = "https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec";
+const WEBAPP_TOKEN = "vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc";
+
 const SYNC_NEXT_MAP_REV = Object.fromEntries(Object.entries(SYNC_NEXT_MAP).map(([k,v])=>[normLabel(v),k]));
 const SYNC_STATUS_MAP_REV = Object.fromEntries(Object.entries(SYNC_STATUS_MAP).map(([k,v])=>[normLabel(v),k]));
 const SYNC_URGENCY_MAP_REV = Object.fromEntries(Object.entries(SYNC_URGENCY_MAP).map(([k,v])=>[normLabel(v.replace(/^\S+\s*/,"")),k]));
@@ -1722,26 +1762,67 @@ function parseCSV(text){
   return rows;
 }
 
+// ─── Diagnóstico permanente de lectura de Sheet ─────────────────────────────
+// Escribe en #sheet-diag (div inyectado por render()) el resultado exacto:
+// URL intentada, filas recibidas, IDs creados, o el error literal.
+// NO usa toast (desaparece en 2.5 s y el usuario no lo ve).
+function _diagSheet(html, ok){
+  const el = document.getElementById("sheet-diag");
+  if(!el) return;
+  el.innerHTML = html;
+  el.style.color = ok ? "var(--ok,#4caf50)" : "var(--urgent,#e53935)";
+  el.style.fontWeight = ok ? "normal" : "bold";
+}
+
 async function loadFromSheet(){
   const statusEl = document.getElementById("sync-status");
+  let urlUsed = "(sin intentar)";
   try {
-    if(statusEl) statusEl.textContent = "⬇️ Leyendo Sheet...";
+    if(statusEl) statusEl.textContent = "⬇️ Leyendo Sheet…";
+    _diagSheet("⏳ Conectando con Google Sheets…", true);
 
-    const url = SHEET_CSV_URL + "&_=" + Date.now(); // cache-buster
-    const resp = await fetch(url);
-    if(!resp.ok) throw new Error("HTTP " + resp.status);
-    const csvText = await resp.text();
+    // Lectura en vivo: gviz (no-cache por cabeceras de Google) como primaria,
+    // "Publicar en la Web" como respaldo. Doble protección anti-caché.
+    let csvText = null, lastErr = null, lastStatus = null;
+    for(const base of [SHEET_CSV_URL, SHEET_CSV_URL_FALLBACK]){
+      urlUsed = base.slice(0, 80);
+      try {
+        const resp = await fetch(base + "&_=" + Date.now(), {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache, no-store" }
+        });
+        lastStatus = resp.status;
+        if(!resp.ok) throw new Error("HTTP " + resp.status + " " + resp.statusText);
+        csvText = await resp.text();
+        break;
+      } catch(err){
+        lastErr = err;
+        _diagSheet("⚠️ URL1 falló: " + err.message + " — probando respaldo…", false);
+      }
+    }
+    if(csvText === null){
+      const errMsg = (lastErr ? lastErr.message : "sin respuesta") +
+        (lastStatus ? " (HTTP " + lastStatus + ")" : " (red/CORS sin respuesta)");
+      throw new Error(errMsg);
+    }
+
     const rows = parseCSV(csvText).filter(r => r.some(cell => String(cell||"").trim() !== ""));
-    if(rows.length < 2){ showToast("⚠️ Sheet vacío"); if(statusEl) statusEl.textContent = "⚠️ Sheet vacío"; return; }
+    if(rows.length < 2){
+      _diagSheet("⚠️ Sheet vacío — 0 filas de datos recibidas", false);
+      if(statusEl) statusEl.textContent = "⚠️ Sheet vacío";
+      return;
+    }
 
     // COLUMNAS PANEL: A=ID B=Jurisdicción C=Tema D=Órgano E=Referencia F=REGAGE
     // G=Fecha actuación H=Cuantía I=Tipo tarea J=Estado K=Fecha límite L=Días límite
     // M=ALERTA N=Deriva a O=Notas
     let updated = 0, created = 0;
+    const newIds = [];
     for(let i=1;i<rows.length;i++){
       const r = rows[i];
-      const ref = String(r[4]||"").trim(); // columna E
-      if(!ref) continue; // sin Referencia no se puede fusionar ni crear con garantías
+      const sheetId = String(r[0]||"").trim(); // columna A — identificador estable
+      const ref = String(r[4]||"").trim();     // columna E
+      if(!sheetId && !ref) continue; // sin ID ni Referencia no se puede fusionar ni crear
 
       const jurisdiccion = String(r[1]||"").trim();
       const tema = String(r[2]||"").trim();
@@ -1755,13 +1836,18 @@ async function loadFromSheet(){
       let amount = null;
       if(cuantiaRaw){
         const amt = parseInt(cuantiaRaw.replace(/[^0-9]/g,""));
-        if(amt > 0) amount = amt;
+        // Antes: if(amt > 0) — descartaba una cuantía legítima de 0 €.
+        // Se guarda también isNaN: "€" o "-" limpian a "" y parseInt("") da NaN.
+        if(cuantiaRaw !== "" && !isNaN(amt)) amount = amt;
       }
       const nextDate = parseSheetDate(fechaLimite);
       const statusKey = SYNC_STATUS_MAP_REV[normLabel(estado)];
       const nextTypeKey = SYNC_NEXT_MAP_REV[normLabel(tipoTarea)];
 
-      const existing = STATE.cases.find(cs => normLabel(cs.ref) === normLabel(ref));
+      // Fusión por ID de columna A (estable); si no hay, por Referencia de columna E.
+      const existing =
+        (sheetId && STATE.cases.find(cs => String(cs.id||"").trim() === sheetId)) ||
+        (ref && STATE.cases.find(cs => normLabel(cs.ref) === normLabel(ref))) || null;
 
       if(existing){
         // Fusión: solo se sobrescriben campos con dato no vacío en el Sheet
@@ -1776,10 +1862,12 @@ async function loadFromSheet(){
         updated++;
       } else {
         // No existe tarjeta con esa Referencia → se crea una nueva
+        const newId = sheetId || ("sh" + Date.now().toString(36) + Math.random().toString(36).slice(2,6));
+        newIds.push(newId);
         STATE.cases.push({
-          id: "sh" + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+          id: newId,
           cat: catKeyFromLabel(jurisdiccion),
-          name: tema || ref,
+          name: tema || ref || sheetId,
           ref: ref,
           court: organo || "",
           amount: amount || 0,
@@ -1797,14 +1885,21 @@ async function loadFromSheet(){
       }
     }
 
-    const msg = "✅ " + updated + " actualizadas, " + created + " creadas";
-    if(statusEl) statusEl.textContent = msg;
-    showToast("⬇️ Sheet: " + msg);
+    const civilCount = STATE.cases.filter(c=>c.cat==="civil").length;
+    const diagOk = "✅ " + updated + " actualizadas, " + created + " nuevas" +
+      " | total: " + STATE.cases.length + " | CIVIL: " + civilCount +
+      (newIds.length ? " | creadas: [" + newIds.join(", ") + "]" : "") +
+      " | " + new Date().toLocaleTimeString("es-ES");
+    if(statusEl) statusEl.textContent = "✅ " + updated + "↑ " + created + "+";
     render(); scheduleSave();
+    _diagSheet(diagOk, true); // DESPUÉS de render() para que el div recién creado exista
   } catch(e){
-    console.warn("Load from sheet failed:", e);
-    if(statusEl) statusEl.textContent = "❌ Error lectura";
-    showToast("❌ Error leyendo Sheet (¿está compartido como 'cualquiera con el enlace'?)");
+    const errDetail = (e && e.message) ? e.message : String(e);
+    _diagSheet("❌ LOAD FALLÓ — " + errDetail +
+      " | URL: " + urlUsed +
+      " | " + new Date().toLocaleTimeString("es-ES"), false);
+    if(statusEl) statusEl.textContent = "❌ Error";
+    console.error("loadFromSheet:", errDetail, "url:", urlUsed);
   }
 }
 
@@ -1820,6 +1915,181 @@ function showToast(msg){
 function esc(s){ return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
 // ═══ INIT ═══
+// loadState() solo pinta la instantánea estática de <script id="app-state">, que queda
+// congelada en la fecha del último guardado. Se pinta primero para que la pizarra
+// aparezca al instante, y acto seguido se lee la Google Sheet EN VIVO y se repinta.
 loadState();
 render();
+
+// Lectura en vivo al arrancar. Si falla (sin red, Sheet no compartido), loadFromSheet()
+// ya lo captura y deja a la vista los datos de la instantánea: nunca pantalla en blanco.
+loadFromSheet();
+
+// ─── MODAL NUEVO CASO ─────────────────────────────────────────────────────────
+(function(){
+  // Inyectar overlay + modal una sola vez al cargar la página
+  const overlay = document.createElement("div");
+  overlay.id = "nc-overlay";
+  overlay.setAttribute("role","dialog");
+  overlay.setAttribute("aria-modal","true");
+  overlay.setAttribute("aria-labelledby","nc-title");
+  overlay.innerHTML = `
+<div id="nc-modal">
+  <button id="nc-close" onclick="closeNuevoCaso()" title="Cerrar">&times;</button>
+  <h2 id="nc-title">➕ Nuevo caso</h2>
+  <div class="nc-field">
+    <label>Jurisdicción *</label>
+    <select id="nc-juris">
+      <option value="">— selecciona —</option>
+      <option value="PENAL">PENAL</option>
+      <option value="CIVIL">CIVIL</option>
+      <option value="SOCIAL">SOCIAL</option>
+      <option value="CONTENCIOSO-ADM">CONTENCIOSO-ADM</option>
+      <option value="FAMILIA">FAMILIA</option>
+      <option value="TC/CGPJ">TC/CGPJ</option>
+      <option value="CGPJ">CGPJ</option>
+      <option value="RECLAMACIONES">RECLAMACIONES</option>
+      <option value="TRIBUTARIO">TRIBUTARIO</option>
+      <option value="EXPEDIENTES">EXPEDIENTES</option>
+      <option value="DECANATO">DECANATO</option>
+      <option value="PENDIENTES">PENDIENTES</option>
+    </select>
+  </div>
+  <div class="nc-field">
+    <label>Tema / Actuación *</label>
+    <input id="nc-tema" type="text" placeholder="Descripción breve del asunto">
+  </div>
+  <div class="nc-row2">
+    <div class="nc-field">
+      <label>Órgano judicial</label>
+      <input id="nc-organo" type="text" placeholder="Juzgado, sala…">
+    </div>
+    <div class="nc-field">
+      <label>Referencia / Nº autos</label>
+      <input id="nc-ref" type="text" placeholder="123/2026/D64">
+    </div>
+  </div>
+  <div class="nc-row2">
+    <div class="nc-field">
+      <label>Fecha actuación * (DD/MM/AAAA)</label>
+      <input id="nc-fecha" type="text" placeholder="07/09/2026">
+    </div>
+    <div class="nc-field">
+      <label>Cuantía (€, opcional)</label>
+      <input id="nc-cuantia" type="text" placeholder="1500">
+    </div>
+  </div>
+  <div class="nc-row2">
+    <div class="nc-field">
+      <label>Tipo de tarea</label>
+      <input id="nc-tipotarea" type="text" placeholder="escrito, vista, plazo…">
+    </div>
+    <div class="nc-field">
+      <label>Fecha límite (DD/MM/AAAA)</label>
+      <input id="nc-fechalimite" type="text" placeholder="30/09/2026">
+    </div>
+  </div>
+  <div class="nc-field">
+    <label>Notas</label>
+    <textarea id="nc-notas" placeholder="Observaciones adicionales…"></textarea>
+  </div>
+  <div id="nc-result"></div>
+  <div class="nc-btns">
+    <button class="nc-btn-cancel" onclick="closeNuevoCaso()">Cancelar</button>
+    <button class="nc-btn-submit" id="nc-submit" onclick="submitNuevoCaso()">Crear caso</button>
+  </div>
+</div>`;
+  document.body.appendChild(overlay);
+
+  // Cerrar al hacer clic en el fondo
+  overlay.addEventListener("click", function(e){
+    if(e.target === overlay) closeNuevoCaso();
+  });
+  // Cerrar con Escape
+  document.addEventListener("keydown", function(e){
+    if(e.key === "Escape" && overlay.classList.contains("open")) closeNuevoCaso();
+  });
+})();
+
+function openNuevoCaso(){
+  const ov = document.getElementById("nc-overlay");
+  if(!ov) return;
+  // Limpiar estado anterior
+  ["nc-juris","nc-tema","nc-organo","nc-ref","nc-fecha","nc-cuantia","nc-tipotarea","nc-fechalimite","nc-notas"]
+    .forEach(id => { const el = document.getElementById(id); if(el) el.value = ""; });
+  const res = document.getElementById("nc-result");
+  if(res){ res.className=""; res.style.display="none"; res.textContent=""; }
+  const btn = document.getElementById("nc-submit");
+  if(btn){ btn.disabled = false; btn.textContent = "Crear caso"; }
+  ov.classList.add("open");
+  const first = document.getElementById("nc-juris");
+  if(first) setTimeout(()=>first.focus(), 60);
+}
+
+function closeNuevoCaso(){
+  const ov = document.getElementById("nc-overlay");
+  if(ov) ov.classList.remove("open");
+}
+
+async function submitNuevoCaso(){
+  const get = id => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+  const juris = get("nc-juris");
+  const tema  = get("nc-tema");
+  const fecha = get("nc-fecha");
+
+  const res = document.getElementById("nc-result");
+  function showRes(msg, ok){
+    res.textContent = msg;
+    res.className = ok ? "ok" : "err";
+    res.style.display = "block";
+  }
+
+  if(!juris){ showRes("⚠️ Selecciona una jurisdicción.", false); return; }
+  if(!tema)  { showRes("⚠️ El campo Tema/Actuación es obligatorio.", false); return; }
+  if(!fecha) { showRes("⚠️ La fecha de actuación es obligatoria.", false); return; }
+
+  const btn = document.getElementById("nc-submit");
+  btn.disabled = true;
+  btn.textContent = "Enviando…";
+  showRes("⏳ Conectando con la Sheet…", true);
+
+  const body = {
+    token          : WEBAPP_TOKEN,
+    jurisdiccion   : juris,
+    tema           : tema,
+    organo         : get("nc-organo"),
+    referencia     : get("nc-ref"),
+    fechaActuacion : fecha,
+    cuantia        : get("nc-cuantia"),
+    tipoTarea      : get("nc-tipotarea"),
+    fechaLimite    : get("nc-fechalimite"),
+    notas          : get("nc-notas")
+  };
+
+  try {
+    const resp = await fetch(WEBAPP_URL, {
+      method  : "POST",
+      headers : { "Content-Type": "application/json" },
+      body    : JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if(data.success){
+      showRes("✅ Caso creado con ID: " + data.id + " — recargando pizarra…", true);
+      btn.textContent = "✅ Creado";
+      // Recargar desde Sheet para que el caso aparezca sin refrescar la página
+      setTimeout(async ()=>{
+        await loadFromSheet();
+        closeNuevoCaso();
+      }, 1200);
+    } else {
+      showRes("❌ Error del servidor: " + (data.error || "respuesta vacía"), false);
+      btn.disabled = false;
+      btn.textContent = "Crear caso";
+    }
+  } catch(e){
+    showRes("❌ Error de red: " + (e.message || String(e)), false);
+    btn.disabled = false;
+    btn.textContent = "Crear caso";
+  }
+}
 </script>
