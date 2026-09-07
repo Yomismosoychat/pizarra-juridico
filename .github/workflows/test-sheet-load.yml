@@ -1,0 +1,179 @@
+name: Test Sheet Load (CIVIL count)
+
+on:
+  push:
+    branches: ['claude/pizarra-juridico-sheets-4jcjoc']
+  workflow_dispatch:
+
+jobs:
+  test-civil-count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install http-server and Playwright
+        run: |
+          npm install -g http-server
+          npm install playwright@latest
+          npx playwright install chromium --with-deps
+
+      - name: Serve index.html and run Playwright test
+        run: |
+          # Start static file server in background
+          http-server . -p 8787 --cors &
+          HTTP_PID=$!
+          sleep 2
+          echo "http-server PID: $HTTP_PID"
+
+          # Run Playwright script
+          node - <<'PLAYWRIGHT_EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const browser = await chromium.launch({
+              headless: true,
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
+            const page = await browser.newPage();
+
+            // Capture all console output
+            const logs = [];
+            page.on('console', msg => {
+              const entry = `[${msg.type().toUpperCase()}] ${msg.text()}`;
+              logs.push(entry);
+              console.log('BROWSER:', entry);
+            });
+            page.on('pageerror', err => {
+              const entry = `[PAGEERROR] ${err.message}`;
+              logs.push(entry);
+              console.log('BROWSER:', entry);
+            });
+
+            // Open the local page (real internet for fetch to Google Sheets)
+            console.log('Opening page...');
+            await page.goto('http://localhost:8787/index.html', {
+              waitUntil: 'domcontentloaded',
+              timeout: 30000
+            });
+
+            // Wait for loadFromSheet() to complete (max 20s)
+            // We detect completion by watching #sheet-diag for ✅ or ❌
+            console.log('Waiting for Sheet load to complete...');
+            let diagText = '';
+            try {
+              await page.waitForFunction(() => {
+                const el = document.getElementById('sheet-diag');
+                if (!el) return false;
+                const t = el.textContent || '';
+                return t.startsWith('✅') || t.startsWith('❌') || t.startsWith('⚠️');
+              }, { timeout: 25000 });
+              diagText = await page.$eval('#sheet-diag', el => el.textContent || '');
+            } catch (e) {
+              diagText = await page.$eval('#sheet-diag', el => el.textContent || '').catch(() => '(not found)');
+              console.log('Timeout waiting for sheet-diag. Current text:', diagText);
+            }
+
+            console.log('');
+            console.log('=== SHEET-DIAG ===');
+            console.log(diagText);
+            console.log('==================');
+
+            // Get topbar total count
+            let topbarText = '(not found)';
+            try {
+              topbarText = await page.$eval('.topbar-count, #total-count, [data-testid="total"]', el => el.textContent || '');
+            } catch (_) {
+              // Try broader selectors
+              try {
+                topbarText = await page.$eval('header', el => el.textContent || '');
+              } catch (_2) {}
+            }
+            console.log('Topbar text:', topbarText);
+
+            // Count CIVIL cards (cards inside the CIVIL group section)
+            const civilCards = await page.$$eval('[data-cat="civil"] .case-card, .group-civil .case-card, [data-group="civil"] .case-card', els => els.length).catch(() => 0);
+
+            // Alternative: expand CIVIL group first then count
+            let civilCount = civilCards;
+            if (civilCount === 0) {
+              // Try clicking CIVIL header to expand
+              try {
+                const civilHeader = await page.$('text=CIVIL, text=Civil, [data-cat="civil"] h2, [data-cat="civil"] .group-header');
+                if (civilHeader) {
+                  await civilHeader.click();
+                  await page.waitForTimeout(500);
+                }
+              } catch(_) {}
+              civilCount = await page.$$eval('[data-cat="civil"] .case-card, .group-civil .case-card', els => els.length).catch(() => 0);
+            }
+
+            // More robust: get CIVIL badge count from page
+            let civilBadge = '?';
+            try {
+              civilBadge = await page.evaluate(() => {
+                // Find badge near CIVIL label
+                const all = document.querySelectorAll('.group-header, .category-header, [class*="group"]');
+                for (const el of all) {
+                  if (el.textContent.includes('CIVIL') || el.textContent.includes('civil')) {
+                    const badge = el.querySelector('.badge, .count, [class*="badge"], [class*="count"]');
+                    if (badge) return badge.textContent;
+                    // Or just extract the number from the header text
+                    const m = el.textContent.match(/CIVIL\s*[·\-:]?\s*(\d+)/i);
+                    if (m) return m[1];
+                  }
+                }
+                return '?';
+              });
+            } catch(_) {}
+
+            // Get full page text for debugging
+            const bodyText = await page.evaluate(() => document.body.innerText);
+            // Find CIVIL section
+            const civilMatch = bodyText.match(/CIVIL[^\n]*\n[\s\S]{0,500}/i);
+            console.log('');
+            console.log('=== CIVIL SECTION (body text) ===');
+            console.log(civilMatch ? civilMatch[0].slice(0, 400) : '(not found)');
+            console.log('=================================');
+
+            console.log('');
+            console.log('=== RESULTS ===');
+            console.log('CIVIL badge:', civilBadge);
+            console.log('CIVIL cards in DOM:', civilCount);
+            console.log('===============');
+
+            // Extract CIVIL number from diag
+            const diagCivilMatch = diagText.match(/CIVIL:\s*(\d+)/);
+            const diagCivilCount = diagCivilMatch ? parseInt(diagCivilMatch[1]) : null;
+            console.log('CIVIL count from sheet-diag:', diagCivilCount);
+
+            await browser.close();
+
+            // FAIL if CIVIL ≠ 7 (sheet-diag is the authoritative count after load)
+            const EXPECTED_CIVIL = 7;
+            if (diagCivilCount === null) {
+              console.error('');
+              console.error('FAIL: Could not determine CIVIL count from sheet-diag.');
+              console.error('sheet-diag says:', diagText);
+              process.exit(1);
+            }
+            if (diagCivilCount !== EXPECTED_CIVIL) {
+              console.error('');
+              console.error(`FAIL: Expected CIVIL=${EXPECTED_CIVIL}, got CIVIL=${diagCivilCount}`);
+              console.error('sheet-diag:', diagText);
+              process.exit(1);
+            }
+            console.log('');
+            console.log(`PASS: CIVIL=${diagCivilCount} as expected.`);
+          })();
+          PLAYWRIGHT_EOF
+
+          # Cleanup
+          kill $HTTP_PID 2>/dev/null || true

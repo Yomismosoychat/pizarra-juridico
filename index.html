@@ -572,7 +572,8 @@ function render(){
     <span class="reclam-sync-status" id="sync-status" style="margin-left:auto"></span>
     <button class="reclam-sync-btn" onclick="syncToSheets()">\u{1F4E4} Sync Sheet</button>
     <button class="reclam-sync-btn" onclick="loadFromSheet()" style="margin-left:4px">\u{2B07}\u{FE0F} Load Sheet</button>
-  </div>`;
+  </div>
+  <div id="sheet-diag" style="font-size:11px;padding:3px 12px 4px;line-height:1.5;word-break:break-all;background:var(--bg2,rgba(255,255,255,.06))"></div>`;
 
   // Forense banner (when pending)
   if(!STATE.forenseReady){
@@ -1733,29 +1734,62 @@ function parseCSV(text){
   return rows;
 }
 
+// ─── Diagnóstico permanente de lectura de Sheet ─────────────────────────────
+// Escribe en #sheet-diag (div inyectado por render()) el resultado exacto:
+// URL intentada, filas recibidas, IDs creados, o el error literal.
+// NO usa toast (desaparece en 2.5 s y el usuario no lo ve).
+function _diagSheet(html, ok){
+  const el = document.getElementById("sheet-diag");
+  if(!el) return;
+  el.innerHTML = html;
+  el.style.color = ok ? "var(--ok,#4caf50)" : "var(--urgent,#e53935)";
+  el.style.fontWeight = ok ? "normal" : "bold";
+}
+
 async function loadFromSheet(){
   const statusEl = document.getElementById("sync-status");
+  let urlUsed = "(sin intentar)";
   try {
-    if(statusEl) statusEl.textContent = "⬇️ Leyendo Sheet...";
+    if(statusEl) statusEl.textContent = "⬇️ Leyendo Sheet…";
+    _diagSheet("⏳ Conectando con Google Sheets…", true);
 
-    // Lectura en vivo: gviz primero, "Publicar en la Web" como respaldo.
-    let csvText = null, lastErr = null;
+    // Lectura en vivo: gviz (no-cache por cabeceras de Google) como primaria,
+    // "Publicar en la Web" como respaldo. Doble protección anti-caché.
+    let csvText = null, lastErr = null, lastStatus = null;
     for(const base of [SHEET_CSV_URL, SHEET_CSV_URL_FALLBACK]){
+      urlUsed = base.slice(0, 80);
       try {
-        const resp = await fetch(base + "&_=" + Date.now(), { cache: "no-store" }); // cache-buster
-        if(!resp.ok) throw new Error("HTTP " + resp.status);
+        const resp = await fetch(base + "&_=" + Date.now(), {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache, no-store" }
+        });
+        lastStatus = resp.status;
+        if(!resp.ok) throw new Error("HTTP " + resp.status + " " + resp.statusText);
         csvText = await resp.text();
         break;
-      } catch(err){ lastErr = err; }
+      } catch(err){
+        lastErr = err;
+        _diagSheet("⚠️ URL1 falló: " + err.message + " — probando respaldo…", false);
+      }
     }
-    if(csvText === null) throw (lastErr || new Error("sin respuesta"));
+    if(csvText === null){
+      const errMsg = (lastErr ? lastErr.message : "sin respuesta") +
+        (lastStatus ? " (HTTP " + lastStatus + ")" : " (red/CORS sin respuesta)");
+      throw new Error(errMsg);
+    }
+
     const rows = parseCSV(csvText).filter(r => r.some(cell => String(cell||"").trim() !== ""));
-    if(rows.length < 2){ showToast("⚠️ Sheet vacío"); if(statusEl) statusEl.textContent = "⚠️ Sheet vacío"; return; }
+    if(rows.length < 2){
+      _diagSheet("⚠️ Sheet vacío — 0 filas de datos recibidas", false);
+      if(statusEl) statusEl.textContent = "⚠️ Sheet vacío";
+      return;
+    }
 
     // COLUMNAS PANEL: A=ID B=Jurisdicción C=Tema D=Órgano E=Referencia F=REGAGE
     // G=Fecha actuación H=Cuantía I=Tipo tarea J=Estado K=Fecha límite L=Días límite
     // M=ALERTA N=Deriva a O=Notas
     let updated = 0, created = 0;
+    const newIds = [];
     for(let i=1;i<rows.length;i++){
       const r = rows[i];
       const sheetId = String(r[0]||"").trim(); // columna A — identificador estable
@@ -1800,8 +1834,10 @@ async function loadFromSheet(){
         updated++;
       } else {
         // No existe tarjeta con esa Referencia → se crea una nueva
+        const newId = sheetId || ("sh" + Date.now().toString(36) + Math.random().toString(36).slice(2,6));
+        newIds.push(newId);
         STATE.cases.push({
-          id: sheetId || ("sh" + Date.now().toString(36) + Math.random().toString(36).slice(2,6)),
+          id: newId,
           cat: catKeyFromLabel(jurisdiccion),
           name: tema || ref || sheetId,
           ref: ref,
@@ -1821,14 +1857,21 @@ async function loadFromSheet(){
       }
     }
 
-    const msg = "✅ " + updated + " actualizadas, " + created + " creadas";
-    if(statusEl) statusEl.textContent = msg;
-    showToast("⬇️ Sheet: " + msg);
+    const civilCount = STATE.cases.filter(c=>c.cat==="civil").length;
+    const diagOk = "✅ " + updated + " actualizadas, " + created + " nuevas" +
+      " | total: " + STATE.cases.length + " | CIVIL: " + civilCount +
+      (newIds.length ? " | creadas: [" + newIds.join(", ") + "]" : "") +
+      " | " + new Date().toLocaleTimeString("es-ES");
+    _diagSheet(diagOk, true);
+    if(statusEl) statusEl.textContent = "✅ " + updated + "↑ " + created + "+";
     render(); scheduleSave();
   } catch(e){
-    console.warn("Load from sheet failed:", e);
-    if(statusEl) statusEl.textContent = "❌ Error lectura";
-    showToast("❌ Error leyendo Sheet (¿está compartido como 'cualquiera con el enlace'?)");
+    const errDetail = (e && e.message) ? e.message : String(e);
+    _diagSheet("❌ LOAD FALLÓ — " + errDetail +
+      " | URL: " + urlUsed +
+      " | " + new Date().toLocaleTimeString("es-ES"), false);
+    if(statusEl) statusEl.textContent = "❌ Error";
+    console.error("loadFromSheet:", errDetail, "url:", urlUsed);
   }
 }
 
