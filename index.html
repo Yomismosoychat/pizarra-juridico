@@ -1755,7 +1755,7 @@ async function loadFromSheet(){
       let amount = null;
       if(cuantiaRaw){
         const amt = parseInt(cuantiaRaw.replace(/[^0-9]/g,""));
-        if(amt > 0) amount = amt;
+           if(cuantiaRaw !== "") amount = amt;
       }
       const nextDate = parseSheetDate(fechaLimite);
       const statusKey = SYNC_STATUS_MAP_REV[normLabel(estado)];
