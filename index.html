@@ -1511,7 +1511,7 @@ function confirmForense(){
 let saveTimer = null;
 let syncTimer = null;
 function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(doSave, 1500); scheduleSync(); }
-function scheduleSync(){ clearTimeout(syncTimer); syncTimer = setTimeout(syncToSheets, 8000); }
+function scheduleSync(){ clearTimeout(syncTimer); syncTimer = setTimeout(()=>syncToSheets(true), 8000); }
 
 async function doSave(){
   try {
@@ -1542,13 +1542,21 @@ const SYNC_URGENCY_MAP = {"red":"\u{1F534} URGENTE","orange":"\u{1F7E0} PRÓXIMO
 const SYNC_NEXT_MAP = {"actuar":"Actuar YA","esperar":"Vigilar respuesta","preparar":"Preparar juicio","revisar":"Revisar"};
 
 let syncInProgress = false;
-async function syncToSheets(){
+async function syncToSheets(silent){
   if(syncInProgress) return;
   syncInProgress = true;
   const statusEl = document.getElementById("sync-status");
   try {
     const mcp = await window.claude?.use?.("mcp");
-    if(!mcp){ syncInProgress = false; return; }
+    if(!mcp){
+      // Fuera del Artifact (p. ej. GitHub Pages) no hay puente MCP: la escritura
+      // al Sheet es imposible. Antes se abandonaba en silencio y el botón parecía roto.
+      if(!silent){
+        if(statusEl) statusEl.textContent = "\u26A0\uFE0F Sync no disponible aquí";
+        showToast("\u26A0\uFE0F Escritura al Sheet solo disponible en el Artifact de Claude");
+      }
+      syncInProgress = false; return;
+    }
     if(statusEl) statusEl.textContent = "⏳ Sincronizando...";
 
     // Build rows: header + grouped cases with separator rows
@@ -1661,9 +1669,12 @@ async function syncToSheets(){
 
 // ═══ LOAD FROM SHEET (pull, vía CSV público — fusiona por Referencia col. E) ═══
 const SHEET_GID = "953772179"; // pestaña PANEL
-// URL de "Publicar en la Web" (Archivo → Compartir → Publicar en la Web) de la pestaña PANEL.
-// Es distinta del SHEET_ID normal: usar tal cual, no reconstruir a partir del ID del documento.
-const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ-xMMd4mJLtRrbNFo1wyifoibRvDjGIrM5kBn2BptpmNWllqIx0jQOer0FhsN9MSOsJGoBflsna2Wq/pub?gid=" + SHEET_GID + "&single=true&output=csv";
+// PRIMARIA: gviz lee el documento EN VIVO. Solo exige que el Sheet esté compartido como
+// "cualquiera con el enlace puede ver". NO depende de "Publicar en la Web", que puede
+// desactivarse o servir una instantánea cacheada sin avisar.
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:csv&gid=" + SHEET_GID;
+// RESPALDO: URL antigua de "Publicar en la Web", por si gviz fallara.
+const SHEET_CSV_URL_FALLBACK = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ-xMMd4mJLtRrbNFo1wyifoibRvDjGIrM5kBn2BptpmNWllqIx0jQOer0FhsN9MSOsJGoBflsna2Wq/pub?gid=" + SHEET_GID + "&single=true&output=csv";
 const SYNC_NEXT_MAP_REV = Object.fromEntries(Object.entries(SYNC_NEXT_MAP).map(([k,v])=>[normLabel(v),k]));
 const SYNC_STATUS_MAP_REV = Object.fromEntries(Object.entries(SYNC_STATUS_MAP).map(([k,v])=>[normLabel(v),k]));
 const SYNC_URGENCY_MAP_REV = Object.fromEntries(Object.entries(SYNC_URGENCY_MAP).map(([k,v])=>[normLabel(v.replace(/^\S+\s*/,"")),k]));
@@ -1727,10 +1738,17 @@ async function loadFromSheet(){
   try {
     if(statusEl) statusEl.textContent = "⬇️ Leyendo Sheet...";
 
-    const url = SHEET_CSV_URL + "&_=" + Date.now(); // cache-buster
-    const resp = await fetch(url);
-    if(!resp.ok) throw new Error("HTTP " + resp.status);
-    const csvText = await resp.text();
+    // Lectura en vivo: gviz primero, "Publicar en la Web" como respaldo.
+    let csvText = null, lastErr = null;
+    for(const base of [SHEET_CSV_URL, SHEET_CSV_URL_FALLBACK]){
+      try {
+        const resp = await fetch(base + "&_=" + Date.now(), { cache: "no-store" }); // cache-buster
+        if(!resp.ok) throw new Error("HTTP " + resp.status);
+        csvText = await resp.text();
+        break;
+      } catch(err){ lastErr = err; }
+    }
+    if(csvText === null) throw (lastErr || new Error("sin respuesta"));
     const rows = parseCSV(csvText).filter(r => r.some(cell => String(cell||"").trim() !== ""));
     if(rows.length < 2){ showToast("⚠️ Sheet vacío"); if(statusEl) statusEl.textContent = "⚠️ Sheet vacío"; return; }
 
@@ -1740,8 +1758,9 @@ async function loadFromSheet(){
     let updated = 0, created = 0;
     for(let i=1;i<rows.length;i++){
       const r = rows[i];
-      const ref = String(r[4]||"").trim(); // columna E
-      if(!ref) continue; // sin Referencia no se puede fusionar ni crear con garantías
+      const sheetId = String(r[0]||"").trim(); // columna A — identificador estable
+      const ref = String(r[4]||"").trim();     // columna E
+      if(!sheetId && !ref) continue; // sin ID ni Referencia no se puede fusionar ni crear
 
       const jurisdiccion = String(r[1]||"").trim();
       const tema = String(r[2]||"").trim();
@@ -1755,13 +1774,18 @@ async function loadFromSheet(){
       let amount = null;
       if(cuantiaRaw){
         const amt = parseInt(cuantiaRaw.replace(/[^0-9]/g,""));
-        if(amt > 0) amount = amt;
+        // Antes: if(amt > 0) — descartaba una cuantía legítima de 0 €.
+        // Se guarda también isNaN: "€" o "-" limpian a "" y parseInt("") da NaN.
+        if(cuantiaRaw !== "" && !isNaN(amt)) amount = amt;
       }
       const nextDate = parseSheetDate(fechaLimite);
       const statusKey = SYNC_STATUS_MAP_REV[normLabel(estado)];
       const nextTypeKey = SYNC_NEXT_MAP_REV[normLabel(tipoTarea)];
 
-      const existing = STATE.cases.find(cs => normLabel(cs.ref) === normLabel(ref));
+      // Fusión por ID de columna A (estable); si no hay, por Referencia de columna E.
+      const existing =
+        (sheetId && STATE.cases.find(cs => String(cs.id||"").trim() === sheetId)) ||
+        (ref && STATE.cases.find(cs => normLabel(cs.ref) === normLabel(ref))) || null;
 
       if(existing){
         // Fusión: solo se sobrescriben campos con dato no vacío en el Sheet
@@ -1777,9 +1801,9 @@ async function loadFromSheet(){
       } else {
         // No existe tarjeta con esa Referencia → se crea una nueva
         STATE.cases.push({
-          id: "sh" + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+          id: sheetId || ("sh" + Date.now().toString(36) + Math.random().toString(36).slice(2,6)),
           cat: catKeyFromLabel(jurisdiccion),
-          name: tema || ref,
+          name: tema || ref || sheetId,
           ref: ref,
           court: organo || "",
           amount: amount || 0,
@@ -1820,6 +1844,13 @@ function showToast(msg){
 function esc(s){ return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
 // ═══ INIT ═══
+// loadState() solo pinta la instantánea estática de <script id="app-state">, que queda
+// congelada en la fecha del último guardado. Se pinta primero para que la pizarra
+// aparezca al instante, y acto seguido se lee la Google Sheet EN VIVO y se repinta.
 loadState();
 render();
+
+// Lectura en vivo al arrancar. Si falla (sin red, Sheet no compartido), loadFromSheet()
+// ya lo captura y deja a la vista los datos de la instantánea: nunca pantalla en blanco.
+loadFromSheet();
 </script>
