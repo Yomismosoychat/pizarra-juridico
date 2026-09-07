@@ -1862,9 +1862,9 @@ async function loadFromSheet(){
       " | total: " + STATE.cases.length + " | CIVIL: " + civilCount +
       (newIds.length ? " | creadas: [" + newIds.join(", ") + "]" : "") +
       " | " + new Date().toLocaleTimeString("es-ES");
-    _diagSheet(diagOk, true);
     if(statusEl) statusEl.textContent = "✅ " + updated + "↑ " + created + "+";
     render(); scheduleSave();
+    _diagSheet(diagOk, true); // DESPUÉS de render() para que el div recién creado exista
   } catch(e){
     const errDetail = (e && e.message) ? e.message : String(e);
     _diagSheet("❌ LOAD FALLÓ — " + errDetail +

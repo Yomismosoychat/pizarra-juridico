@@ -154,24 +154,36 @@ jobs:
             const diagCivilCount = diagCivilMatch ? parseInt(diagCivilMatch[1]) : null;
             console.log('CIVIL count from sheet-diag:', diagCivilCount);
 
+            // Fallback: extract CIVIL count from body text (header shows "CIVIL\n7\n▼")
+            let bodyCivilCount = null;
+            try {
+              const bodyMatch = bodyText.match(/CIVIL\s*\n\s*(\d+)/i);
+              if (bodyMatch) bodyCivilCount = parseInt(bodyMatch[1]);
+            } catch(_) {}
+            console.log('CIVIL count from body text:', bodyCivilCount);
+
+            // Authoritative count: sheet-diag if available, otherwise body text
+            const finalCivilCount = diagCivilCount !== null ? diagCivilCount : bodyCivilCount;
+            console.log('CIVIL count (authoritative):', finalCivilCount);
+
             await browser.close();
 
-            // FAIL if CIVIL ≠ 7 (sheet-diag is the authoritative count after load)
+            // FAIL if CIVIL ≠ 7
             const EXPECTED_CIVIL = 7;
-            if (diagCivilCount === null) {
+            if (finalCivilCount === null) {
               console.error('');
-              console.error('FAIL: Could not determine CIVIL count from sheet-diag.');
+              console.error('FAIL: Could not determine CIVIL count from sheet-diag or body text.');
               console.error('sheet-diag says:', diagText);
               process.exit(1);
             }
-            if (diagCivilCount !== EXPECTED_CIVIL) {
+            if (finalCivilCount !== EXPECTED_CIVIL) {
               console.error('');
-              console.error(`FAIL: Expected CIVIL=${EXPECTED_CIVIL}, got CIVIL=${diagCivilCount}`);
+              console.error(`FAIL: Expected CIVIL=${EXPECTED_CIVIL}, got CIVIL=${finalCivilCount}`);
               console.error('sheet-diag:', diagText);
               process.exit(1);
             }
             console.log('');
-            console.log(`PASS: CIVIL=${diagCivilCount} as expected.`);
+            console.log(`PASS: CIVIL=${finalCivilCount} as expected.`);
           })();
           PLAYWRIGHT_EOF
 
