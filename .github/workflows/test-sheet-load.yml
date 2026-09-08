@@ -224,6 +224,31 @@ jobs:
             page.on('console', msg => console.log(`BROWSER [${msg.type().toUpperCase()}]`, msg.text()));
             page.on('pageerror', err => console.log('BROWSER [PAGEERROR]', err.message));
 
+            // ── Interceptar LECTURAS de producción → TEST Sheet ───────────────
+            // loadFromSheet() usa dos URLs de producción; este route las redirige
+            // al Sheet de TEST para que loadFromSheet() (inicial, auto-reload,
+            // o page.reload()) siempre lea los datos de TEST.
+            await page.route('**/gviz/tq**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE gviz read error:', e.message);
+                await route.continue();
+              }
+            });
+            await page.route('**/pub?**output=csv**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE pub read error:', e.message);
+                await route.continue();
+              }
+            });
+
             // ── Step 0: contar filas en TEST antes del submit ─────────────────
             console.log('');
             console.log('=== Step 0: Fetching TEST gviz CSV (baseline) ===');
@@ -536,6 +561,28 @@ jobs:
             page.on('console', msg => console.log(`BROWSER [${msg.type().toUpperCase()}]`, msg.text()));
             page.on('pageerror', err => console.log('BROWSER [PAGEERROR]', err.message));
 
+            // ── Interceptar LECTURAS de producción → TEST Sheet ───────────────
+            await page.route('**/gviz/tq**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE gviz read error:', e.message);
+                await route.continue();
+              }
+            });
+            await page.route('**/pub?**output=csv**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE pub read error:', e.message);
+                await route.continue();
+              }
+            });
+
             // ── Step 1: Open page, wait for initial load ──────────────────────
             console.log('=== Step 1: Opening page ===');
             await page.goto('http://localhost:8787/index.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -839,6 +886,28 @@ jobs:
             browser = await chromium.launch({ headless: true });
             const page = await browser.newPage();
 
+            // ── Interceptar LECTURAS de producción → TEST Sheet ───────────────
+            await page.route('**/gviz/tq**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE gviz read error:', e.message);
+                await route.continue();
+              }
+            });
+            await page.route('**/pub?**output=csv**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE pub read error:', e.message);
+                await route.continue();
+              }
+            });
+
             // ── Step 1: Create test case for "cerrar" ─────────────────────────
             console.log('=== Step 1: Creating test case for cerrar test ===');
             const TEST_TS = Date.now();
@@ -895,25 +964,60 @@ jobs:
               console.log(`Warning: "Cerrado" not clearly visible in TEST CSV. Row: ${cerrRowMatch}`);
             }
 
-            // ── Step 5: Load app, verify CASOS CERRADOS group ────────────────
-            console.log('=== Step 5: Verifying CASOS CERRADOS group in app ===');
-            await page.goto('http://localhost:8787', { waitUntil:'networkidle', timeout:30000 });
-            await page.waitForTimeout(3000);
+            // ── Step 5: Load app, verify cerrId is in CASOS CERRADOS section ──
+            console.log('=== Step 5: Verifying cerrId appears in CASOS CERRADOS section ===');
+            await page.goto('http://localhost:8787', { waitUntil:'domcontentloaded', timeout:30000 });
+            // Wait for TEST sheet data to load (route intercept ensures TEST data)
+            await page.waitForFunction(() => {
+              const el = document.getElementById('sheet-diag');
+              if (!el) return false;
+              const t = el.textContent || '';
+              return t.startsWith('✅') || t.startsWith('❌') || t.startsWith('⚠️');
+            }, { timeout: 25000 });
+            const diagStep5 = await page.$eval('#sheet-diag', el => el.textContent || '');
+            console.log('Sheet diag:', diagStep5.slice(0, 120));
 
-            const gruposBtn = page.locator('button, [onclick*="grupos"], [data-view="grupos"]').filter({ hasText: /grupo/i }).first();
-            if(await gruposBtn.count() > 0){
-              await gruposBtn.click();
-              await page.waitForTimeout(1000);
+            // Expand the CASOS CERRADOS section (starts collapsed by default)
+            await page.evaluate(() => {
+              const headers = Array.from(document.querySelectorAll('.cat-header'));
+              const cerrHdr = headers.find(h => {
+                const label = h.querySelector('.cat-label');
+                return label && label.textContent.includes('CASOS CERRADOS');
+              });
+              if (cerrHdr) cerrHdr.click();
+            });
+
+            // Wait for the specific case card to appear in DOM (cerrId has status=cerrado
+            // so it only appears in CASOS CERRADOS, never in any regular category)
+            try {
+              await page.waitForFunction((id) => {
+                return !!document.getElementById('detail-' + id);
+              }, cerrId, { timeout: 8000 });
+              console.log(`PASS: Case ${cerrId} found in CASOS CERRADOS section ✓`);
+            } catch(e) {
+              throw new Error(`Case ${cerrId} not found in CASOS CERRADOS section after expand: ${e.message}`);
             }
 
-            const cerrHeader = page.locator('text=CASOS CERRADOS');
-            const cerrVisible = await cerrHeader.count() > 0;
-            console.log(`PASS: CASOS CERRADOS group visible: ${cerrVisible} ✓`);
+            // ── Step 6: Verify trash button for borrarId specifically ────────
+            console.log('=== Step 6: Verifying trash button for borrarId ===');
+            // borrarId is in SOCIAL (status != cerrado) — expand SOCIAL section
+            await page.evaluate(() => {
+              const headers = Array.from(document.querySelectorAll('.cat-header'));
+              const socialHdr = headers.find(h => {
+                const label = h.querySelector('.cat-label');
+                return label && label.textContent.includes('SOCIAL');
+              });
+              if (socialHdr) socialHdr.click();
+            });
 
-            // ── Step 6: Verify trash button exists ───────────────────────────
-            console.log('=== Step 6: Verifying trash button exists ===');
-            const trashBtns = await page.locator('.btn-trash').count();
-            console.log(`PASS: Found ${trashBtns} trash buttons ✓`);
+            try {
+              await page.waitForFunction((id) => {
+                return !!document.querySelector(`.btn-trash[onclick*="${id}"]`);
+              }, borrarId, { timeout: 8000 });
+              console.log(`PASS: Trash button for ${borrarId} found ✓`);
+            } catch(e) {
+              throw new Error(`Trash button for ${borrarId} not found in SOCIAL section after expand: ${e.message}`);
+            }
 
             console.log('');
             console.log('ALL TRASH/CERRAR TESTS PASSED ✓');
@@ -1005,6 +1109,28 @@ jobs:
             browser = await chromium.launch({ headless: true });
             const page = await browser.newPage();
 
+            // ── Interceptar LECTURAS de producción → TEST Sheet ───────────────
+            await page.route('**/gviz/tq**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE gviz read error:', e.message);
+                await route.continue();
+              }
+            });
+            await page.route('**/pub?**output=csv**', async (route) => {
+              try {
+                const r = await fetch(TEST_GVIZ_URL);
+                const body = await r.text();
+                await route.fulfill({ status: 200, contentType: 'text/csv', body });
+              } catch(e) {
+                console.log('ROUTE pub read error:', e.message);
+                await route.continue();
+              }
+            });
+
             // ── Step 1: Create a PENDIENTES case ─────────────────────────────
             console.log('=== Step 1: Creating PENDIENTES test case ===');
             const TEST_TS = Date.now();
@@ -1045,11 +1171,39 @@ jobs:
               console.log(`Warning: CIVIL not visible in TEST CSV. Row: ${pendRow}`);
             }
 
-            // ── Step 4: Load app, check activar-overlay exists ───────────────
-            console.log('=== Step 4: Checking activar-overlay modal exists in DOM ===');
-            await page.goto('http://localhost:8787', { waitUntil:'networkidle', timeout:30000 });
-            const activarOverlay = await page.locator('#activar-overlay').count();
-            console.log(`PASS: #activar-overlay in DOM: ${activarOverlay > 0} ✓`);
+            // ── Step 4: Load app, verify pendId appears in CIVIL section ────────
+            console.log('=== Step 4: Verifying pendId appears in CIVIL section in DOM ===');
+            await page.goto('http://localhost:8787', { waitUntil:'domcontentloaded', timeout:30000 });
+            // Wait for TEST sheet data to load (route intercept ensures TEST data)
+            await page.waitForFunction(() => {
+              const el = document.getElementById('sheet-diag');
+              if (!el) return false;
+              const t = el.textContent || '';
+              return t.startsWith('✅') || t.startsWith('❌') || t.startsWith('⚠️');
+            }, { timeout: 25000 });
+            const diagStep4 = await page.$eval('#sheet-diag', el => el.textContent || '');
+            console.log('Sheet diag:', diagStep4.slice(0, 120));
+
+            // Expand CIVIL section (starts collapsed)
+            await page.evaluate(() => {
+              const headers = Array.from(document.querySelectorAll('.cat-header'));
+              const civilHdr = headers.find(h => {
+                const label = h.querySelector('.cat-label');
+                return label && label.textContent.includes('CIVIL');
+              });
+              if (civilHdr) civilHdr.click();
+            });
+
+            // Wait for pendId card to appear in DOM — proves reclassification took effect
+            // (pendId had cat=pendiente but is now CIVIL; CIVIL section renders it after expand)
+            try {
+              await page.waitForFunction((id) => {
+                return !!document.getElementById('detail-' + id);
+              }, pendId, { timeout: 8000 });
+              console.log(`PASS: Reclassified case ${pendId} found in CIVIL section ✓`);
+            } catch(e) {
+              throw new Error(`Case ${pendId} not found in CIVIL section after expand — reclassification may not be reflected: ${e.message}`);
+            }
 
             console.log('');
             console.log('ALL ACTIVAR PENDIENTE TESTS PASSED ✓');
