@@ -615,59 +615,44 @@ jobs:
               console.log('New ID not in resultText (network error path) — will recover from CSV in Step 7.');
             }
 
-            // ── Step 5: Wait for auto-reload ──────────────────────────────────
-            console.log('=== Step 5: Waiting for auto-reload ===');
-            try {
-              await page.waitForFunction(() => {
-                const el = document.getElementById('nc-overlay');
-                return el && !el.classList.contains('open');
-              }, { timeout: 12000 });
-              console.log('Modal closed ✓');
-            } catch(e) { console.log('Warning: modal did not close within 12s'); }
-
-            let updatedDiag = '';
-            try {
-              await page.waitForFunction(
-                (prev) => {
-                  const el = document.getElementById('sheet-diag');
-                  if (!el) return false;
-                  const t = el.textContent || '';
-                  return (t.startsWith('✅') || t.startsWith('❌')) && t !== prev;
-                },
-                diagInit,
-                { timeout: 30000 }
-              );
-              updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '');
-              console.log('Updated diag:', updatedDiag.slice(0, 120));
-            } catch(e) {
-              updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '').catch(() => '');
-              console.log('Warning: diag timeout. Current:', updatedDiag.slice(0, 120));
+            // ── Step 5: Wait for modal close (only reliable on the ✅ path) ──────
+            console.log('=== Step 5: Waiting for modal close ===');
+            if (!isNetworkError) {
+              try {
+                await page.waitForFunction(() => {
+                  const el = document.getElementById('nc-overlay');
+                  return el && !el.classList.contains('open');
+                }, { timeout: 12000 });
+                console.log('Modal closed ✓');
+                let updatedDiag = '';
+                try {
+                  await page.waitForFunction(
+                    (prev) => {
+                      const el = document.getElementById('sheet-diag');
+                      if (!el) return false;
+                      const t = el.textContent || '';
+                      return (t.startsWith('✅') || t.startsWith('❌')) && t !== prev;
+                    },
+                    diagInit,
+                    { timeout: 30000 }
+                  );
+                  updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '');
+                  console.log('Updated diag:', updatedDiag.slice(0, 120));
+                } catch(e) {
+                  updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '').catch(() => '');
+                  console.log('Warning: diag timeout. Current:', updatedDiag.slice(0, 120));
+                }
+              } catch(e) {
+                console.log('Warning: modal did not close within 12s');
+              }
+            } else {
+              console.log('Note: skipping modal/diag wait on network-error path — modal stays open when app sees CORS error.');
             }
 
-            // ── Step 6: Verify EXTERNOS group renders with sub-carpeta ────────
-            console.log('=== Step 6: Verify EXTERNOS subgroup in DOM ===');
-            const externosExpanded = await page.evaluate(() => {
-              const headers = Array.from(document.querySelectorAll('.cat-header'));
-              const extHdr = headers.find(h => {
-                const label = h.querySelector('.cat-label');
-                return label && label.textContent.trim().toUpperCase().includes('EXTERNOS');
-              });
-              if (!extHdr) return false;
-              extHdr.click();
-              return true;
-            });
-            console.log('EXTERNOS header clicked:', externosExpanded);
-            if (externosExpanded) await page.waitForTimeout(800);
-
-            const subgroupFound = await page.$$eval('.ext-subgroup-hdr', els =>
-              els.some(el => el.textContent.includes('PlaywrightTestPerson'))
-            ).catch(() => false);
-            console.log('Subgroup header with persona found:', subgroupFound);
-            if (!subgroupFound) throw new Error('EXTERNOS subgroup header for PlaywrightTestPerson not found in DOM');
-            console.log('PASS: EXTERNOS subcarpeta rendered correctly ✓');
-
-            // ── Step 7: Verify write in TEST gviz CSV (source of truth) ─────
-            console.log('=== Step 7: Verify write in TEST gviz CSV (source of truth) ===');
+            // ── Step 6: Verify write in TEST gviz CSV (source of truth) ─────
+            // Run BEFORE DOM check so we can confirm the write and recover newId
+            // before attempting to reload the page for the DOM check.
+            console.log('=== Step 6: Verify write in TEST gviz CSV (source of truth) ===');
             await new Promise(r => setTimeout(r, 3000));
             let csvAfter = '';
             let idFound  = false;
@@ -712,11 +697,47 @@ jobs:
             } else {
               console.log(`Warning: cuantía ${TEST_CUANTIA} not clearly visible in CSV row`);
             }
-
             if (isNetworkError) {
-              console.log('');
               console.log('PASS: Write confirmed in TEST Sheet via gviz despite UI network/CORS error ✓');
             }
+
+            // ── Step 7: Verify EXTERNOS subgroup renders in DOM ───────────────
+            // On the network-error path the modal stayed open and the page did not
+            // auto-reload — force a full page reload so fresh data is rendered.
+            console.log('=== Step 7: Verify EXTERNOS subgroup in DOM ===');
+            if (isNetworkError) {
+              console.log('Network-error path: forcing page.reload() so fresh data is loaded into DOM...');
+              await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+              await page.waitForFunction(() => {
+                const el = document.getElementById('sheet-diag');
+                if (!el) return false;
+                const t = el.textContent || '';
+                return t.startsWith('✅') || t.startsWith('❌') || t.startsWith('⚠️');
+              }, { timeout: 30000 });
+              const freshDiag = await page.$eval('#sheet-diag', el => el.textContent || '').catch(() => '');
+              console.log('Fresh diag after reload:', freshDiag.slice(0, 120));
+            }
+
+            const externosExpanded = await page.evaluate(() => {
+              const headers = Array.from(document.querySelectorAll('.cat-header'));
+              const extHdr = headers.find(h => {
+                const label = h.querySelector('.cat-label');
+                return label && label.textContent.trim().toUpperCase().includes('EXTERNOS');
+              });
+              if (!extHdr) return false;
+              extHdr.click();
+              return true;
+            });
+            console.log('EXTERNOS header clicked:', externosExpanded);
+            if (externosExpanded) await page.waitForTimeout(800);
+
+            const subgroupFound = await page.$$eval('.ext-subgroup-hdr', els =>
+              els.some(el => el.textContent.includes('PlaywrightTestPerson'))
+            ).catch(() => false);
+            console.log('Subgroup header with persona found:', subgroupFound);
+            if (!subgroupFound) throw new Error('EXTERNOS subgroup header for PlaywrightTestPerson not found in DOM');
+            console.log('PASS: EXTERNOS subcarpeta rendered correctly ✓');
+
             console.log('');
             console.log('ALL EXTERNOS TESTS PASSED ✓');
 
