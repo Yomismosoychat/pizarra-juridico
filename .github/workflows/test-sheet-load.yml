@@ -585,6 +585,23 @@ jobs:
             const externosSection = bodyText.match(/EXTERNOS[\s\S]{0,800}/i);
             console.log('EXTERNOS section:', externosSection ? externosSection[0].slice(0, 400) : '(not found)');
 
+            // EXTERNOS group is collapsed by default — expand it first
+            console.log('Expanding EXTERNOS group...');
+            const externosExpanded = await page.evaluate(() => {
+              const headers = Array.from(document.querySelectorAll('.cat-header'));
+              const extHdr = headers.find(h => {
+                const label = h.querySelector('.cat-label');
+                return label && label.textContent.trim().toUpperCase().includes('EXTERNOS');
+              });
+              if (!extHdr) { console.log('ext header not found'); return false; }
+              extHdr.click();
+              return true;
+            });
+            console.log('EXTERNOS header clicked:', externosExpanded);
+            if (externosExpanded) {
+              await page.waitForTimeout(800);
+            }
+
             // Check subgroup header with TEST_PERSONA
             const subgroupFound = await page.$$eval('.ext-subgroup-hdr', els =>
               els.some(el => el.textContent.includes('PlaywrightTestPerson'))
