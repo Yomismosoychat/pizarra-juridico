@@ -252,9 +252,9 @@ jobs:
             console.log('');
             console.log('=== Step 3: Filling form ===');
 
-            // Jurisdicción select → PENDIENTES (avoids changing CIVIL=7 baseline)
-            await page.selectOption('#nc-juris', 'PENDIENTES');
-            console.log('Jurisdicción set to PENDIENTES ✓');
+            // Jurisdicción select → first real option (dynamic dropdown, index-based)
+            await page.selectOption('#nc-juris', { index: 1 });
+            console.log('Jurisdicción set to first available option ✓');
 
             // Tema (required)
             await page.fill('#nc-tema', temaTest);
