@@ -353,6 +353,19 @@ body{background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;paddi
 .forense-court-ref{font-size:10px;color:var(--text2)}
 .forense-modal-footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
 .forense-modal-footer button{border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+/* ── Resultado del juicio ─────────────────────────────────────────────────── */
+.rbadge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;margin-left:4px;vertical-align:middle}
+.rbadge-ganado{background:#bbf7d0;color:#15803d}
+.rbadge-parcial{background:#fef08a;color:#854d0e}
+.rbadge-perdido{background:#fecaca;color:#991b1b}
+.rbadge-vista{background:#dbeafe;color:#1d4ed8}
+.resultado-section{margin-top:12px;padding:12px;background:var(--bg2,rgba(0,0,0,.03));border:1px solid var(--border);border-radius:8px}
+.resultado-hdr{font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.05em;margin-bottom:10px}
+.resultado-grid{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;align-items:start;font-size:12px}
+.resultado-grid label{font-weight:600;color:var(--text2);padding-top:4px}
+.resultado-grid select,.resultado-grid input[type=number],.resultado-grid input[type=date]{width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:12px;background:var(--card);color:var(--text)}
+.resultado-grid textarea{width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-family:inherit;font-size:12px;background:var(--card);color:var(--text);resize:vertical}
+.resultado-grid input[type=checkbox]{margin-top:6px;width:16px;height:16px;cursor:pointer}
 </style>
 
 <div id="app"></div>
@@ -843,6 +856,7 @@ function renderCard(c, showCat){
       ${dateStr}
       ${c.amount?`<span class="cc-amount">${c.amount.toLocaleString("es-ES")}\u20AC</span>`:""}
       <span class="cc-court">${esc(c.court||"")}</span>
+      ${formatResultadoBadge(c.resultado)}
     </div>`;
 
   // ROW 2: Current action - ALWAYS VISIBLE
@@ -907,6 +921,8 @@ function renderCard(c, showCat){
 
   if(hechoOpen===c.id) h += renderHechoForm(c);
 
+  if(c.trial) h += renderResultadoForm(c);
+
   h += `</div></div>`;
   return h;
 }
@@ -942,7 +958,7 @@ function renderTabla(cases){
         <td style="font-weight:600;color:var(--alta)">${c.amount?fmtEuro(c.amount):"\u2014"}</td>
         <td class="td-current">${esc(c.current)}</td>
         <td><span class="pill ${statusCls}">${esc(c.status)}</span></td>
-        <td style="white-space:nowrap;font-size:10px">${c.trial?`\u2696\uFE0F ${fmtDate(c.trial)}`:c.nextDate?fmtDate(c.nextDate):"\u2014"}</td>
+        <td style="white-space:nowrap;font-size:10px">${c.trial?`\u2696\uFE0F ${fmtDate(c.trial)}`:c.nextDate?fmtDate(c.nextDate):"\u2014"}${formatResultadoBadge(c.resultado)}</td>
         <td class="td-steps"><div style="display:flex;gap:2px;flex-wrap:wrap">${exSteps.slice(-3).map(s=>{
           const cls=s.c==="yellow"?"sc-yellow":s.c==="red"?"sc-red":s.c==="green"?"sc-green":"sc-default";
           return `<span class="step-chip ${cls}" style="max-width:150px" title="${esc(s.t)}">${esc(s.t)}</span>`;
@@ -1084,7 +1100,7 @@ function renderReclamacion(cases){
     for(const c of cc){
       h += `<tr>
         <td></td>
-        <td style="font-weight:500">${esc(c.name)}</td>
+        <td style="font-weight:500">${esc(c.name)}${formatResultadoBadge(c.resultado)}</td>
         <td style="color:var(--alta);font-weight:600">${fmtEuro(c.amount)}</td>
         <td><input class="reclam-input" type="text" value="${c.ganado||0}" onchange="setGanado('${c.id}',this.value)" placeholder="0"></td>
         <td style="font-weight:500">${fmtEuro((c.amount||0)-(c.ganado||0))}</td>
@@ -1863,6 +1879,9 @@ async function loadFromSheet(){
       const estado = String(r[9]||"").trim();
       const fechaLimite = String(r[10]||"").trim();
       const notas = String(r[14]||"").trim();
+      const resultadoRaw = String(r[15]||"").trim();
+      let resultadoParsed = null;
+      if(resultadoRaw){ try{ resultadoParsed = JSON.parse(resultadoRaw); }catch(e){} }
 
       let amount = null;
       if(cuantiaRaw){
@@ -1890,6 +1909,7 @@ async function loadFromSheet(){
         if(nextDate) existing.nextDate = nextDate;
         if(notas) existing.current = notas;
         if(jurisdiccion) existing.cat = catKeyFromLabel(jurisdiccion);
+        if(resultadoParsed) existing.resultado = resultadoParsed;
         updated++;
       } else {
         // No existe tarjeta con esa Referencia → se crea una nueva
@@ -1910,7 +1930,8 @@ async function loadFromSheet(){
           nextDate: nextDate,
           steps: [],
           urgency: "yellow",
-          ganado: 0
+          ganado: 0,
+          resultado: resultadoParsed || null
         });
         created++;
       }
@@ -2113,6 +2134,92 @@ async function borrarCaso(id, name){
 // ── Cerrar caso (actualiza Estado → "cerrado" en columna J del Sheet) ─────────────
 // "cerrado" es el valor literal escrito en la columna J (Estado).
 // El caso deja de aparecer en su grupo de origen y pasa al grupo CASOS CERRADOS.
+// ── Resultado del juicio — funciones compartidas ─────────────────────────────
+function formatResultadoBadge(res){
+  if(!res) return "";
+  if(res.estado === "ganado"){
+    const s = res.cuantiaGanada ? " " + res.cuantiaGanada.toLocaleString("es-ES") + "€" : "";
+    return `<span class="rbadge rbadge-ganado">✅ GANADO${s}</span>`;
+  }
+  if(res.estado === "parcial"){
+    const s = res.cuantiaGanada ? " " + res.cuantiaGanada.toLocaleString("es-ES") + "€" : "";
+    return `<span class="rbadge rbadge-parcial">⚡ PARCIAL${s}</span>`;
+  }
+  if(res.estado === "perdido"){
+    return `<span class="rbadge rbadge-perdido">❌ PERDIDO</span>`;
+  }
+  if(res.proximaVista){
+    const d = new Date(res.proximaVista);
+    if(!isNaN(d)){
+      const s = d.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"2-digit"});
+      return `<span class="rbadge rbadge-vista">⏳ Vista ${s}</span>`;
+    }
+  }
+  return "";
+}
+
+function renderResultadoForm(c){
+  const res = c.resultado || {};
+  return `<div class="resultado-section">
+    <div class="resultado-hdr">\u{1F4CB} RESULTADO DEL JUICIO</div>
+    <div class="resultado-grid">
+      <label>Estado</label>
+      <select id="res-estado-${c.id}">
+        <option value="" ${!res.estado?"selected":""}>— Sin resultado aún —</option>
+        <option value="ganado" ${res.estado==="ganado"?"selected":""}>✅ Ganado</option>
+        <option value="parcial" ${res.estado==="parcial"?"selected":""}>⚡ Parcial</option>
+        <option value="perdido" ${res.estado==="perdido"?"selected":""}>❌ Perdido</option>
+      </select>
+      <label>Cuantía ganada (€)</label>
+      <input type="number" id="res-cuantia-${c.id}" value="${res.cuantiaGanada||0}" min="0">
+      <label>Veredicto / Fallo</label>
+      <textarea id="res-veredicto-${c.id}" rows="2">${esc(res.veredicto||"")}</textarea>
+      <label>Cómo se ganó</label>
+      <textarea id="res-como-${c.id}" rows="2">${esc(res.comoSeGano||"")}</textarea>
+      <label>Próxima vista</label>
+      <input type="date" id="res-proxvista-${c.id}" value="${res.proximaVista||""}">
+      <label>Cerrado</label>
+      <input type="checkbox" id="res-cerrado-${c.id}" ${res.cerrado?"checked":""}>
+    </div>
+    <button class="btn-submit" style="margin-top:10px;font-size:12px" onclick="saveResultado('${c.id}')">💾 Guardar resultado</button>
+  </div>`;
+}
+
+async function saveResultado(id){
+  const c = STATE.cases.find(x=>x.id===id);
+  if(!c) return;
+  const res = {
+    estado      : document.getElementById("res-estado-"+id)?.value || null,
+    cuantiaGanada: parseInt(document.getElementById("res-cuantia-"+id)?.value)||0,
+    veredicto   : (document.getElementById("res-veredicto-"+id)?.value||"").trim(),
+    comoSeGano  : (document.getElementById("res-como-"+id)?.value||"").trim(),
+    proximaVista: document.getElementById("res-proxvista-"+id)?.value || null,
+    cerrado     : document.getElementById("res-cerrado-"+id)?.checked||false
+  };
+  if(!res.estado) res.estado = null;
+  c.resultado = res;
+
+  // Persistir en columna P del Sheet
+  try {
+    await fetch(WEBAPP_URL,{method:"POST",body:JSON.stringify({
+      token:WEBAPP_TOKEN, action:"update", id:id, campo:"resultado", valor:JSON.stringify(res)
+    })});
+  } catch(e){ console.warn("saveResultado Sheet:", e.message); }
+
+  // Si cerrado, disparar mismo flujo que cerrarCaso (sin confirm)
+  if(res.cerrado && c.status !== "cerrado"){
+    c.status = "cerrado";
+    try {
+      await fetch(WEBAPP_URL,{method:"POST",body:JSON.stringify({
+        token:WEBAPP_TOKEN, action:"update", id:id, campo:"estado", valor:"cerrado"
+      })});
+    } catch(e){ console.warn("saveResultado cerrar:", e.message); }
+  }
+
+  render(); scheduleSave();
+  showToast("Resultado guardado ✅");
+}
+
 async function cerrarCaso(id){
   const c = STATE.cases.find(x=>x.id===id);
   if(!c) return;
