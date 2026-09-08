@@ -575,6 +575,12 @@ function render(){
   const view = STATE.view || "groups";
   const filter = (document.getElementById("searchBox")||{}).value || "";
 
+  // Preservar foco/cursor de cualquier input activo antes de reconstruir el DOM
+  const _active = document.activeElement;
+  const _activeId = _active && _active.id;
+  const _selStart = (_active && typeof _active.selectionStart === "number") ? _active.selectionStart : null;
+  const _selEnd   = (_active && typeof _active.selectionEnd   === "number") ? _active.selectionEnd   : null;
+
   let cases = STATE.cases.filter(c => {
     if(!filter) return true;
     const q = filter.toLowerCase();
@@ -644,6 +650,17 @@ function render(){
   else if(view === "seguimiento") h += renderSeguimiento();
 
   app.innerHTML = h;
+
+  // Restaurar foco y posición de cursor tras reconstruir el DOM
+  if(_activeId){
+    const el = document.getElementById(_activeId);
+    if(el && typeof el.focus === "function"){
+      el.focus();
+      if(_selStart !== null && typeof el.setSelectionRange === "function"){
+        try { el.setSelectionRange(_selStart, _selEnd); } catch(e){}
+      }
+    }
+  }
 }
 
 function renderGrouped(cases){
