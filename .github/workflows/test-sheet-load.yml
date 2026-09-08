@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── TEST 1: Sheet loads correctly, CIVIL count = 7 ─────────────────────────
+  # ── TEST 1: Sheet loads correctly, CIVIL count = 7 (solo lectura — producción) ──
   test-civil-count:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -28,13 +28,11 @@ jobs:
 
       - name: Serve index.html and run Playwright test
         run: |
-          # Start static file server in background
           http-server . -p 8787 --cors &
           HTTP_PID=$!
           sleep 2
           echo "http-server PID: $HTTP_PID"
 
-          # Run Playwright script
           node - <<'PLAYWRIGHT_EOF'
           const { chromium } = require('playwright');
 
@@ -45,7 +43,6 @@ jobs:
             });
             const page = await browser.newPage();
 
-            // Capture all console output
             const logs = [];
             page.on('console', msg => {
               const entry = `[${msg.type().toUpperCase()}] ${msg.text()}`;
@@ -58,14 +55,12 @@ jobs:
               console.log('BROWSER:', entry);
             });
 
-            // Open the local page (real internet for fetch to Google Sheets)
             console.log('Opening page...');
             await page.goto('http://localhost:8787/index.html', {
               waitUntil: 'domcontentloaded',
               timeout: 30000
             });
 
-            // Wait for loadFromSheet() to complete (max 25s)
             console.log('Waiting for Sheet load to complete...');
             let diagText = '';
             try {
@@ -86,7 +81,6 @@ jobs:
             console.log(diagText);
             console.log('==================');
 
-            // Get full page text for debugging
             const bodyText = await page.evaluate(() => document.body.innerText);
             const civilMatch = bodyText.match(/CIVIL[^\n]*\n[\s\S]{0,500}/i);
             console.log('');
@@ -94,12 +88,10 @@ jobs:
             console.log(civilMatch ? civilMatch[0].slice(0, 400) : '(not found)');
             console.log('=================================');
 
-            // Extract CIVIL count from diag
             const diagCivilMatch = diagText.match(/CIVIL:\s*(\d+)/);
             const diagCivilCount = diagCivilMatch ? parseInt(diagCivilMatch[1]) : null;
             console.log('CIVIL count from sheet-diag:', diagCivilCount);
 
-            // Fallback: extract from body text pattern "CIVIL\n7"
             let bodyCivilCount = null;
             try {
               const bodyMatch = bodyText.match(/CIVIL\s*\n\s*(\d+)/i);
@@ -128,10 +120,9 @@ jobs:
           })();
           PLAYWRIGHT_EOF
 
-          # Cleanup
           kill $HTTP_PID 2>/dev/null || true
 
-  # ── TEST 2: Form submit → new row in Sheet (with cleanup) ─────────────────
+  # ── TEST 2: Form submit → TEST sheet (route interception + cleanup) ─────────
   test-form-submit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -152,7 +143,7 @@ jobs:
           npm install playwright@latest
           npx playwright install chromium --with-deps
 
-      - name: Form submit test (real Web App + gviz verification + cleanup)
+      - name: Form submit test (TEST sheet via route interception + cleanup)
         run: |
           http-server . -p 8787 --cors &
           HTTP_PID=$!
@@ -162,27 +153,34 @@ jobs:
           node - <<'PLAYWRIGHT_EOF'
           const { chromium } = require('playwright');
 
-          const SHEET_ID   = '15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts';
-          const SHEET_GID  = '953772179';
-          const GVIZ_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SHEET_GID}`;
-          const WEBAPP_URL  = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
+          // ── Sheet de TEST aislado (nunca tocar producción en este job) ────────
+          const TEST_SHEET_ID = '1666QZMGfHcRontlMBukwa8jq6fSNotmczob_Z4sfc9g';
+          const TEST_GID      = '953772179';
+          const TEST_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${TEST_SHEET_ID}/gviz/tq?tqx=out:csv&gid=${TEST_GID}`;
+
+          const WEBAPP_URL   = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
           const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
 
-          // Today's date in DD/MM/YYYY (Spain format)
+          if (!TEST_SHEET_ID) {
+            console.error('FAIL: TEST_SHEET_ID no definido. Abortando para no escribir en producción.');
+            process.exit(1);
+          }
+
           const today = new Date();
           const fechaHoy = `${String(today.getDate()).padStart(2,'0')}/${String(today.getMonth()+1).padStart(2,'0')}/${today.getFullYear()}`;
           const temaTest = `Playwright-test-${Date.now()}`;
 
           console.log(`Test date: ${fechaHoy}`);
           console.log(`Test tema: ${temaTest}`);
+          console.log(`TEST_SHEET_ID: ${TEST_SHEET_ID}`);
+          console.log(`TEST_GVIZ_URL: ${TEST_GVIZ_URL}`);
 
-          // ── Guaranteed cleanup helper ─────────────────────────────────────
           async function deleteTestRow(id) {
             if (!id) return;
             try {
               const r = await fetch(WEBAPP_URL, {
                 method: 'POST',
-                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id })
+                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id, sheetId: TEST_SHEET_ID })
               });
               const d = await r.json();
               console.log(`Cleanup ${id}: deleted=${d.deleted} success=${d.success}`);
@@ -196,29 +194,49 @@ jobs:
           let exitCode = 0;
 
           try {
-            // ── Step 0: Read gviz CSV before submit (to get baseline total) ──
-            console.log('');
-            console.log('=== Step 0: Fetching gviz CSV (baseline) ===');
-            let csvBefore = '';
-            try {
-              const r = await fetch(GVIZ_URL);
-              csvBefore = await r.text();
-              const rowsBefore = csvBefore.trim().split('\n').filter(l => l.trim()).length - 1;
-              console.log(`Baseline: ${rowsBefore} data rows in Sheet`);
-            } catch(e) {
-              console.log('Warning: could not fetch gviz before submit:', e.message);
-            }
-
-            // ── Step 1: Open page, wait for initial Sheet load ──
             browser = await chromium.launch({
               headless: true,
               args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
             const page = await browser.newPage();
 
+            // ── Interceptar POSTs al Apps Script e inyectar sheetId ───────────
+            // Esto desvía las escrituras de la UI al Sheet de test sin tocar index.html
+            await page.route('**/macros/s/**', async (route) => {
+              const req = route.request();
+              if (req.method() === 'POST') {
+                const raw = req.postData() || '{}';
+                let body;
+                try {
+                  body = JSON.parse(raw);
+                  body.sheetId = TEST_SHEET_ID;
+                } catch(e) {
+                  body = raw; // si falla el parse, dejar pasar sin modificar
+                }
+                console.log('ROUTE: inyectando sheetId en POST a Apps Script');
+                await route.continue({ postData: JSON.stringify(body) });
+              } else {
+                await route.continue();
+              }
+            });
+
             page.on('console', msg => console.log(`BROWSER [${msg.type().toUpperCase()}]`, msg.text()));
             page.on('pageerror', err => console.log('BROWSER [PAGEERROR]', err.message));
 
+            // ── Step 0: contar filas en TEST antes del submit ─────────────────
+            console.log('');
+            console.log('=== Step 0: Fetching TEST gviz CSV (baseline) ===');
+            let testRowsBefore = null;
+            try {
+              const r = await fetch(TEST_GVIZ_URL + '&_=' + Date.now());
+              const csv = await r.text();
+              testRowsBefore = csv.trim().split('\n').filter(l => l.trim()).length - 1;
+              console.log(`TEST sheet baseline: ${testRowsBefore} data rows`);
+            } catch(e) {
+              console.log('Warning: could not fetch TEST gviz before submit:', e.message);
+            }
+
+            // ── Step 1: Open page, wait for initial Sheet load ────────────────
             console.log('');
             console.log('=== Step 1: Opening page ===');
             await page.goto('http://localhost:8787/index.html', {
@@ -241,12 +259,7 @@ jobs:
               console.log('Warning: timeout waiting for initial sheet-diag');
             }
 
-            let totalBefore = null;
-            const totalMatch = initialDiag.match(/total:\s*(\d+)/);
-            if (totalMatch) totalBefore = parseInt(totalMatch[1]);
-            console.log(`Total before submit: ${totalBefore}`);
-
-            // ── Step 2: Open modal ──
+            // ── Step 2: Open modal ────────────────────────────────────────────
             console.log('');
             console.log('=== Step 2: Opening + Nuevo caso modal ===');
             const btnNuevo = await page.$('#btn-nuevo-caso, .nuevo-caso-btn');
@@ -258,21 +271,19 @@ jobs:
             if (!overlayVisible) throw new Error('#nc-overlay did not open after button click');
             console.log('Modal opened ✓');
 
-            // ── Step 3: Fill form ──
+            // ── Step 3: Fill form ─────────────────────────────────────────────
             console.log('');
             console.log('=== Step 3: Filling form ===');
             await page.selectOption('#nc-juris', { index: 1 });
-            console.log('Jurisdicción set to first available option ✓');
             await page.fill('#nc-tema', temaTest);
-            console.log(`Tema set to: ${temaTest} ✓`);
             await page.fill('#nc-fecha', fechaHoy);
-            console.log(`Fecha actuación set to: ${fechaHoy} ✓`);
             await page.fill('#nc-organo', 'Playwright CI').catch(() => {});
-            await page.fill('#nc-notas', 'Automated test row — safe to delete').catch(() => {});
+            await page.fill('#nc-notas', 'Automated test row — TEST sheet only').catch(() => {});
+            console.log(`Tema: ${temaTest} | Fecha: ${fechaHoy} ✓`);
 
-            // ── Step 4: Submit ──
+            // ── Step 4: Submit (interceptado → va al Sheet de TEST) ───────────
             console.log('');
-            console.log('=== Step 4: Submitting form ===');
+            console.log('=== Step 4: Submitting form (→ TEST sheet) ===');
             await page.click('#nc-submit');
             console.log('Submit clicked. Waiting for response...');
 
@@ -287,7 +298,6 @@ jobs:
               resultText = await page.$eval('#nc-result', el => el.textContent || '');
             } catch(e) {
               resultText = await page.$eval('#nc-result', el => el.textContent || '').catch(() => '(not found)');
-              console.log('Timeout waiting for result. Current result:', resultText);
             }
 
             console.log('');
@@ -295,133 +305,90 @@ jobs:
             console.log(resultText);
             console.log('===================');
 
-            if (!resultText.includes('✅')) throw new Error(`Form submit did not return success (✅). Result: ${resultText}`);
+            if (!resultText.includes('✅')) throw new Error(`Form submit did not return ✅. Result: ${resultText}`);
 
             const idMatch = resultText.match(/ID:\s*([a-z0-9\-]+)/i);
             newId = idMatch ? idMatch[1] : null;
             console.log(`New ID returned by Web App: ${newId}`);
             if (!newId) throw new Error(`Could not extract new ID from result: ${resultText}`);
 
-            // ── Step 5: Wait for loadFromSheet() to reload after 1.2s delay ──
+            // ── Step 5: Wait for modal to close ──────────────────────────────
             console.log('');
-            console.log('=== Step 5: Waiting for page to reload from Sheet ===');
+            console.log('=== Step 5: Waiting for modal to close ===');
             try {
               await page.waitForFunction(() => {
                 const el = document.getElementById('nc-overlay');
                 return el && !el.classList.contains('open');
               }, { timeout: 10000 });
-              console.log('Modal closed (loadFromSheet triggered) ✓');
+              console.log('Modal closed ✓');
             } catch(e) {
               console.log('Warning: modal did not close within 10s');
             }
 
-            let updatedDiag = '';
-            try {
-              if (initialDiag) {
-                await page.waitForFunction(
-                  (prev) => {
-                    const el = document.getElementById('sheet-diag');
-                    if (!el) return false;
-                    const t = el.textContent || '';
-                    return (t.startsWith('✅') || t.startsWith('❌')) && t !== prev;
-                  },
-                  initialDiag,
-                  { timeout: 25000 }
-                );
-              } else {
-                await page.waitForFunction(() => {
-                  const el = document.getElementById('sheet-diag');
-                  if (!el) return false;
-                  const t = el.textContent || '';
-                  return t.startsWith('✅') || t.startsWith('❌');
-                }, { timeout: 25000 });
-              }
-              updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '');
-              console.log('Updated diag:', updatedDiag.slice(0, 120));
-            } catch(e) {
-              updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '').catch(() => '');
-              console.log('Warning: timeout waiting for updated diag. Current:', updatedDiag.slice(0, 120));
-            }
-
-            let totalAfter = null;
-            const totalAfterMatch = updatedDiag.match(/total:\s*(\d+)/);
-            if (totalAfterMatch) totalAfter = parseInt(totalAfterMatch[1]);
-            console.log(`Total after submit: ${totalAfter}`);
-
-            // ── Step 6: Verify total increased by 1 ──
+            // ── Step 6: Verify new ID in TEST gviz CSV ────────────────────────
             console.log('');
-            console.log('=== Step 6: Verify total +1 ===');
-            if (totalBefore !== null && totalAfter !== null) {
-              if (totalAfter === totalBefore + 1) {
-                console.log(`PASS: Total went from ${totalBefore} → ${totalAfter} (+1) ✓`);
-              } else {
-                throw new Error(`Expected total ${totalBefore + 1}, got ${totalAfter}`);
-              }
-            } else {
-              console.log(`Warning: could not compare totals (before=${totalBefore}, after=${totalAfter}). Skipping count check.`);
-            }
-
-            // ── Step 7: Verify new ID in gviz CSV ──
-            console.log('');
-            console.log('=== Step 7: Verifying new ID in gviz CSV ===');
+            console.log('=== Step 6: Verifying new ID in TEST gviz CSV ===');
             await new Promise(r => setTimeout(r, 3000));
 
             let csvAfter = '';
-            let idFound = false;
-            for (let attempts = 0; attempts < 5 && !idFound; attempts++) {
+            let idFound  = false;
+            for (let attempt = 0; attempt < 5 && !idFound; attempt++) {
               try {
-                const r = await fetch(GVIZ_URL + '&_=' + Date.now());
+                const r = await fetch(TEST_GVIZ_URL + '&_=' + Date.now());
                 csvAfter = await r.text();
                 if (csvAfter.includes(newId)) {
                   idFound = true;
                 } else {
-                  console.log(`Attempt ${attempts+1}: ID not yet in CSV, waiting 4s...`);
+                  console.log(`Attempt ${attempt+1}: ID not yet in TEST CSV, waiting 4s...`);
                   await new Promise(r => setTimeout(r, 4000));
                 }
               } catch(e) {
-                console.log(`Attempt ${attempts+1}: gviz fetch error: ${e.message}`);
+                console.log(`Attempt ${attempt+1}: gviz error: ${e.message}`);
                 await new Promise(r => setTimeout(r, 4000));
               }
             }
 
             console.log('');
-            console.log('=== GVIZ CSV RESULT ===');
+            console.log('=== TEST GVIZ RESULT ===');
             console.log(`New ID searched: ${newId}`);
-            console.log(`ID found in CSV: ${idFound}`);
+            console.log(`ID found in TEST CSV: ${idFound}`);
             if (csvAfter) {
-              const rowsAfter = csvAfter.trim().split('\n').filter(l => l.trim()).length - 1;
-              console.log(`Total rows in Sheet after submit: ${rowsAfter}`);
+              const testRowsAfter = csvAfter.trim().split('\n').filter(l => l.trim()).length - 1;
+              console.log(`TEST sheet rows after submit: ${testRowsAfter} (was: ${testRowsBefore})`);
+              if (testRowsBefore !== null && testRowsAfter === testRowsBefore + 1) {
+                console.log('PASS: TEST sheet row count +1 ✓');
+              } else {
+                console.log(`Info: row count ${testRowsBefore} → ${testRowsAfter} (TOTAL row may affect count)`);
+              }
             }
-            console.log('=======================');
+            console.log('========================');
 
             if (!idFound) {
               const lines = csvAfter.trim().split('\n');
-              console.error('Last 3 CSV rows:');
+              console.error('Last 3 TEST CSV rows:');
               lines.slice(-3).forEach(l => console.error(' ', l.slice(0, 120)));
-              throw new Error(`New ID "${newId}" not found in gviz CSV after 5 attempts.`);
+              throw new Error(`New ID "${newId}" not found in TEST gviz CSV after 5 attempts.`);
             }
 
             console.log('');
-            console.log(`PASS: New ID "${newId}" confirmed in Google Sheet via gviz ✓`);
+            console.log(`PASS: New ID "${newId}" confirmed in TEST Sheet via gviz ✓`);
             console.log('ALL FORM SUBMIT TESTS PASSED ✓');
 
           } catch(e) {
             console.error('FAIL:', e.message);
             exitCode = 1;
           } finally {
-            // ── Cleanup: always delete test row ──────────────────────────────
             console.log('');
-            console.log('=== CLEANUP: Deleting test row ===');
+            console.log('=== CLEANUP: Deleting test row from TEST sheet ===');
             await deleteTestRow(newId);
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
           PLAYWRIGHT_EOF
 
-          # Cleanup
           kill $HTTP_PID 2>/dev/null || true
 
-  # ── TEST 3: EXTERNOS group — create, verify subcarpeta, check EN JUEGO, delete ──
+  # ── TEST 3: EXTERNOS group — create in TEST sheet, verify, delete ───────────
   test-externos-group:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -442,7 +409,7 @@ jobs:
           npm install playwright@latest
           npx playwright install chromium --with-deps
 
-      - name: EXTERNOS test (create → verify subgroup → check cuantia → delete)
+      - name: EXTERNOS test (create in TEST → verify subgroup → delete from TEST)
         run: |
           http-server . -p 8787 --cors &
           HTTP_PID=$!
@@ -452,11 +419,18 @@ jobs:
           node - <<'PLAYWRIGHT_EOF'
           const { chromium } = require('playwright');
 
-          const SHEET_ID    = '15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts';
-          const SHEET_GID   = '953772179';
-          const GVIZ_URL    = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SHEET_GID}`;
-          const WEBAPP_URL  = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
+          // ── Sheet de TEST aislado ─────────────────────────────────────────────
+          const TEST_SHEET_ID = '1666QZMGfHcRontlMBukwa8jq6fSNotmczob_Z4sfc9g';
+          const TEST_GID      = '953772179';
+          const TEST_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${TEST_SHEET_ID}/gviz/tq?tqx=out:csv&gid=${TEST_GID}`;
+
+          const WEBAPP_URL   = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
           const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
+
+          if (!TEST_SHEET_ID) {
+            console.error('FAIL: TEST_SHEET_ID no definido. Abortando para no escribir en producción.');
+            process.exit(1);
+          }
 
           const TEST_PERSONA = 'PlaywrightTestPerson';
           const TEST_TEMA    = 'Consulta de prueba CI';
@@ -464,12 +438,14 @@ jobs:
           const today = new Date();
           const fechaHoy = `${String(today.getDate()).padStart(2,'0')}/${String(today.getMonth()+1).padStart(2,'0')}/${today.getFullYear()}`;
 
+          console.log(`TEST_SHEET_ID: ${TEST_SHEET_ID}`);
+
           async function deleteRow(id) {
             if (!id) return;
             try {
               const r = await fetch(WEBAPP_URL, {
                 method: 'POST',
-                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id })
+                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id, sheetId: TEST_SHEET_ID })
               });
               const d = await r.json();
               console.log(`Cleanup ${id}: deleted=${d.deleted} success=${d.success}`);
@@ -479,16 +455,36 @@ jobs:
           }
 
           let browser;
-          let newId = null;
+          let newId    = null;
           let exitCode = 0;
 
           try {
             browser = await chromium.launch({ headless: true, args: ['--no-sandbox','--disable-setuid-sandbox'] });
             const page = await browser.newPage();
+
+            // ── Interceptar POSTs al Apps Script e inyectar sheetId ───────────
+            await page.route('**/macros/s/**', async (route) => {
+              const req = route.request();
+              if (req.method() === 'POST') {
+                const raw = req.postData() || '{}';
+                let body;
+                try {
+                  body = JSON.parse(raw);
+                  body.sheetId = TEST_SHEET_ID;
+                } catch(e) {
+                  body = raw;
+                }
+                console.log('ROUTE: inyectando sheetId en POST a Apps Script');
+                await route.continue({ postData: JSON.stringify(body) });
+              } else {
+                await route.continue();
+              }
+            });
+
             page.on('console', msg => console.log(`BROWSER [${msg.type().toUpperCase()}]`, msg.text()));
             page.on('pageerror', err => console.log('BROWSER [PAGEERROR]', err.message));
 
-            // ── Step 1: Open page, wait for initial load ──
+            // ── Step 1: Open page, wait for initial load ──────────────────────
             console.log('=== Step 1: Opening page ===');
             await page.goto('http://localhost:8787/index.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
             await page.waitForFunction(() => {
@@ -500,11 +496,7 @@ jobs:
             const diagInit = await page.$eval('#sheet-diag', el => el.textContent || '');
             console.log('Initial diag:', diagInit.slice(0, 120));
 
-            const totalInitMatch = diagInit.match(/total:\s*(\d+)/);
-            const totalInit = totalInitMatch ? parseInt(totalInitMatch[1]) : null;
-            console.log('Initial total:', totalInit);
-
-            // ── Step 2: Open modal, select EXTERNOS ──
+            // ── Step 2: Open modal → EXTERNOS ────────────────────────────────
             console.log('=== Step 2: Opening modal → EXTERNOS ===');
             const btnNuevo = await page.$('#btn-nuevo-caso, .nuevo-caso-btn');
             if (!btnNuevo) throw new Error('#btn-nuevo-caso not found');
@@ -519,11 +511,10 @@ jobs:
             await page.waitForTimeout(200);
 
             const personaVisible = await page.$eval('#nc-persona-wrap', el => el.style.display !== 'none').catch(() => false);
-            const jurisHidden    = await page.$eval('#nc-juris-wrap',   el => el.style.display === 'none').catch(() => false);
-            console.log('Persona field visible:', personaVisible, '| Juris hidden:', jurisHidden);
             if (!personaVisible) throw new Error('#nc-persona-wrap not visible after EXTERNOS selection');
+            console.log('Persona field visible ✓');
 
-            // ── Step 3: Fill form ──
+            // ── Step 3: Fill form ─────────────────────────────────────────────
             console.log('=== Step 3: Filling EXTERNOS form ===');
             await page.fill('#nc-persona', TEST_PERSONA);
             await page.fill('#nc-tema', TEST_TEMA);
@@ -531,8 +522,8 @@ jobs:
             await page.fill('#nc-cuantia', TEST_CUANTIA);
             console.log(`Persona: ${TEST_PERSONA} | Tema: ${TEST_TEMA} | Cuantía: ${TEST_CUANTIA} ✓`);
 
-            // ── Step 4: Submit ──
-            console.log('=== Step 4: Submitting ===');
+            // ── Step 4: Submit (interceptado → TEST sheet) ───────────────────
+            console.log('=== Step 4: Submitting (→ TEST sheet) ===');
             await page.click('#nc-submit');
             await page.waitForFunction(() => {
               const el = document.getElementById('nc-result');
@@ -543,14 +534,14 @@ jobs:
             const resultText = await page.$eval('#nc-result', el => el.textContent || '');
             console.log('Form result:', resultText);
 
-            if (!resultText.includes('✅')) throw new Error(`Form did not return success: ${resultText}`);
+            if (!resultText.includes('✅')) throw new Error(`Form did not return ✅: ${resultText}`);
 
             const idMatch = resultText.match(/ID:\s*([a-z0-9\-]+)/i);
             newId = idMatch ? idMatch[1] : null;
             console.log('New ID:', newId);
             if (!newId) throw new Error(`Could not extract ID from result: ${resultText}`);
 
-            // ── Step 5: Wait for auto-reload ──
+            // ── Step 5: Wait for auto-reload ──────────────────────────────────
             console.log('=== Step 5: Waiting for auto-reload ===');
             try {
               await page.waitForFunction(() => {
@@ -579,30 +570,21 @@ jobs:
               console.log('Warning: diag timeout. Current:', updatedDiag.slice(0, 120));
             }
 
-            // ── Step 6: Verify EXTERNOS group renders with sub-carpeta ──
+            // ── Step 6: Verify EXTERNOS group renders with sub-carpeta ────────
             console.log('=== Step 6: Verify EXTERNOS subgroup in DOM ===');
-            const bodyText = await page.evaluate(() => document.body.innerText);
-            const externosSection = bodyText.match(/EXTERNOS[\s\S]{0,800}/i);
-            console.log('EXTERNOS section:', externosSection ? externosSection[0].slice(0, 400) : '(not found)');
-
-            // EXTERNOS group may be collapsed — expand it first
-            console.log('Expanding EXTERNOS group...');
             const externosExpanded = await page.evaluate(() => {
               const headers = Array.from(document.querySelectorAll('.cat-header'));
               const extHdr = headers.find(h => {
                 const label = h.querySelector('.cat-label');
                 return label && label.textContent.trim().toUpperCase().includes('EXTERNOS');
               });
-              if (!extHdr) { console.log('ext header not found'); return false; }
+              if (!extHdr) return false;
               extHdr.click();
               return true;
             });
             console.log('EXTERNOS header clicked:', externosExpanded);
-            if (externosExpanded) {
-              await page.waitForTimeout(800);
-            }
+            if (externosExpanded) await page.waitForTimeout(800);
 
-            // Check subgroup header with TEST_PERSONA
             const subgroupFound = await page.$$eval('.ext-subgroup-hdr', els =>
               els.some(el => el.textContent.includes('PlaywrightTestPerson'))
             ).catch(() => false);
@@ -610,42 +592,25 @@ jobs:
             if (!subgroupFound) throw new Error('EXTERNOS subgroup header for PlaywrightTestPerson not found in DOM');
             console.log('PASS: EXTERNOS subcarpeta rendered correctly ✓');
 
-            // ── Step 7: Verify total +1 ──
-            console.log('=== Step 7: Verify total +1 ===');
-            const totalAfterMatch = updatedDiag.match(/total:\s*(\d+)/);
-            const totalAfter = totalAfterMatch ? parseInt(totalAfterMatch[1]) : null;
-            console.log(`Total before: ${totalInit}, after: ${totalAfter}`);
-            if (totalInit !== null && totalAfter !== null) {
-              if (totalAfter === totalInit + 1) {
-                console.log('PASS: Total +1 ✓');
-              } else {
-                throw new Error(`Expected total ${totalInit + 1}, got ${totalAfter}`);
-              }
-            } else {
-              console.log('Warning: could not compare totals, skipping count check');
-            }
-
-            // ── Step 8: Verify ID in gviz CSV ──
-            console.log('=== Step 8: Verify ID in gviz CSV ===');
+            // ── Step 7: Verify ID in TEST gviz CSV ───────────────────────────
+            console.log('=== Step 7: Verify ID in TEST gviz CSV ===');
             await new Promise(r => setTimeout(r, 3000));
             let csvAfter = '';
-            let idFound = false;
+            let idFound  = false;
             for (let i = 0; i < 5 && !idFound; i++) {
               try {
-                const r = await fetch(GVIZ_URL + '&_=' + Date.now());
+                const r = await fetch(TEST_GVIZ_URL + '&_=' + Date.now());
                 csvAfter = await r.text();
                 if (csvAfter.includes(newId)) { idFound = true; }
-                else { console.log(`Attempt ${i+1}: ID not yet in CSV, waiting 4s...`); await new Promise(r => setTimeout(r, 4000)); }
+                else { console.log(`Attempt ${i+1}: ID not yet in TEST CSV, waiting 4s...`); await new Promise(r => setTimeout(r, 4000)); }
               } catch(e) { console.log(`Attempt ${i+1}: gviz error: ${e.message}`); await new Promise(r => setTimeout(r, 4000)); }
             }
-            if (!idFound) throw new Error(`ID "${newId}" not found in gviz CSV after 5 attempts`);
-            console.log(`PASS: ID "${newId}" confirmed in Sheet via gviz ✓`);
+            if (!idFound) throw new Error(`ID "${newId}" not found in TEST gviz CSV after 5 attempts`);
+            console.log(`PASS: ID "${newId}" confirmed in TEST Sheet ✓`);
 
-            const csvLines = csvAfter.split('\n');
-            const ourRow = csvLines.find(l => l.includes(newId));
-            console.log('Our CSV row:', ourRow ? ourRow.slice(0, 200) : '(not found)');
+            const ourRow = csvAfter.split('\n').find(l => l.includes(newId));
             if (ourRow && ourRow.includes(TEST_CUANTIA)) {
-              console.log(`PASS: Cuantía ${TEST_CUANTIA} confirmed in CSV row ✓`);
+              console.log(`PASS: Cuantía ${TEST_CUANTIA} confirmed in TEST CSV row ✓`);
             } else {
               console.log(`Warning: cuantía ${TEST_CUANTIA} not clearly visible in CSV row`);
             }
@@ -657,19 +622,17 @@ jobs:
             console.error('FAIL:', e.message);
             exitCode = 1;
           } finally {
-            // ── Cleanup: always delete test row ──────────────────────────────
             console.log('');
-            console.log('=== CLEANUP: Deleting test row ===');
+            console.log('=== CLEANUP: Deleting test row from TEST sheet ===');
             await deleteRow(newId);
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
           PLAYWRIGHT_EOF
 
-          # Cleanup
           kill $HTTP_PID 2>/dev/null || true
 
-  # ── TEST 4: TAREA 1/2 — trash + cerrar + CASOS CERRADOS group ────────────────
+  # ── TEST 4: trash + cerrar + CASOS CERRADOS group (TEST sheet) ───────────────
   test-trash-cerrar:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -690,7 +653,7 @@ jobs:
           npm install playwright@latest
           npx playwright install chromium --with-deps
 
-      - name: Trash + Cerrar tests
+      - name: Trash + Cerrar tests (TEST sheet)
         run: |
           http-server . -p 8787 --cors &
           HTTP_PID=$!
@@ -699,14 +662,27 @@ jobs:
           node - << 'PLAYWRIGHT_EOF'
           const { chromium } = require('playwright');
 
+          // ── Sheet de TEST aislado ─────────────────────────────────────────────
+          const TEST_SHEET_ID = '1666QZMGfHcRontlMBukwa8jq6fSNotmczob_Z4sfc9g';
+          const TEST_GID      = '953772179';
+          const TEST_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${TEST_SHEET_ID}/gviz/tq?tqx=out:csv&gid=${TEST_GID}`;
+
           const WEBAPP_URL   = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
           const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
-          const SHEET_CSV    = 'https://docs.google.com/spreadsheets/d/15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts/gviz/tq?tqx=out:csv&gid=953772179';
+
+          if (!TEST_SHEET_ID) {
+            console.error('FAIL: TEST_SHEET_ID no definido. Abortando para no escribir en producción.');
+            process.exit(1);
+          }
+
+          console.log(`TEST_SHEET_ID: ${TEST_SHEET_ID}`);
 
           async function apiCall(body, label) {
+            // Siempre incluir sheetId → operación sobre TEST sheet
+            const safeBody = Object.assign({}, body, { sheetId: TEST_SHEET_ID });
             for(let attempt=1; attempt<=3; attempt++){
               try {
-                const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(body) });
+                const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(safeBody) });
                 const d = await r.json();
                 console.log(`${label} [attempt ${attempt}]:`, JSON.stringify(d));
                 return d;
@@ -719,7 +695,7 @@ jobs:
           }
 
           let browser;
-          let cerrId = null;
+          let cerrId   = null;
           let borrarId = null;
           let exitCode = 0;
 
@@ -727,7 +703,7 @@ jobs:
             browser = await chromium.launch({ headless: true });
             const page = await browser.newPage();
 
-            // ── Step 1: Create test case for "cerrar" test ───────────────
+            // ── Step 1: Create test case for "cerrar" ─────────────────────────
             console.log('=== Step 1: Creating test case for cerrar test ===');
             const TEST_TS = Date.now();
             const cerrData = await apiCall({
@@ -744,7 +720,7 @@ jobs:
             cerrId = cerrData.id;
             console.log(`PASS: Created case ${cerrId} for cerrar test ✓`);
 
-            // ── Step 2: Create test case for "borrar" test ────────────────
+            // ── Step 2: Create test case for "borrar" ─────────────────────────
             console.log('=== Step 2: Creating test case for borrar test ===');
             const borrarData = await apiCall({
               token: WEBAPP_TOKEN,
@@ -758,8 +734,8 @@ jobs:
             borrarId = borrarData.id;
             console.log(`PASS: Created case ${borrarId} for borrar test ✓`);
 
-            // ── Step 3: Close the cerrar case via API ─────────────────────
-            console.log('=== Step 3: Calling update action to cerrar case ===');
+            // ── Step 3: Close the cerrar case via API ─────────────────────────
+            console.log('=== Step 3: Update estado → cerrado ===');
             const updateData = await apiCall({
               token: WEBAPP_TOKEN,
               action: 'update',
@@ -771,19 +747,19 @@ jobs:
             if(!updateData.success) throw new Error(`update action failed: ${updateData.error}`);
             console.log(`PASS: update action success (updated=${updateData.updated}) ✓`);
 
-            // ── Step 4: Verify "cerrado" in Sheet CSV ──────────────────────
-            console.log('=== Step 4: Verifying "cerrado" in Sheet CSV ===');
+            // ── Step 4: Verify "cerrado" in TEST CSV ──────────────────────────
+            console.log('=== Step 4: Verifying "cerrado" in TEST CSV ===');
             await new Promise(r=>setTimeout(r,3000));
-            const csvResp = await fetch(SHEET_CSV);
+            const csvResp = await fetch(TEST_GVIZ_URL + '&_=' + Date.now());
             const csvText = await csvResp.text();
             const cerrRowMatch = csvText.split('\n').find(row => row.includes(cerrId));
             if(cerrRowMatch && cerrRowMatch.toLowerCase().includes('cerrado')) {
-              console.log(`PASS: "Cerrado" found in CSV row for ${cerrId} ✓`);
+              console.log(`PASS: "Cerrado" found in TEST CSV row for ${cerrId} ✓`);
             } else {
-              console.log(`Warning: "Cerrado" not clearly visible in CSV (may be a label mapping). Row: ${cerrRowMatch}`);
+              console.log(`Warning: "Cerrado" not clearly visible in TEST CSV. Row: ${cerrRowMatch}`);
             }
 
-            // ── Step 5: Load app, switch to Grupos view, verify CASOS CERRADOS ──
+            // ── Step 5: Load app, verify CASOS CERRADOS group ────────────────
             console.log('=== Step 5: Verifying CASOS CERRADOS group in app ===');
             await page.goto('http://localhost:8787', { waitUntil:'networkidle', timeout:30000 });
             await page.waitForTimeout(3000);
@@ -798,7 +774,7 @@ jobs:
             const cerrVisible = await cerrHeader.count() > 0;
             console.log(`PASS: CASOS CERRADOS group visible: ${cerrVisible} ✓`);
 
-            // ── Step 6: Verify trash button exists on a card ──────────────
+            // ── Step 6: Verify trash button exists ───────────────────────────
             console.log('=== Step 6: Verifying trash button exists ===');
             const trashBtns = await page.locator('.btn-trash').count();
             console.log(`PASS: Found ${trashBtns} trash buttons ✓`);
@@ -810,20 +786,18 @@ jobs:
             console.error('FAIL:', e.message);
             exitCode = 1;
           } finally {
-            // ── Cleanup: always delete both test cases ────────────────────
             console.log('');
-            console.log('=== CLEANUP: Deleting test cases ===');
-            if (cerrId)   await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: cerrId },   'cleanup-cerr').catch(e => console.log('cleanup-cerr failed:', e.message));
+            console.log('=== CLEANUP: Deleting test cases from TEST sheet ===');
+            if (cerrId)   await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: cerrId   }, 'cleanup-cerr').catch(e => console.log('cleanup-cerr failed:', e.message));
             if (borrarId) await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: borrarId }, 'cleanup-borr').catch(e => console.log('cleanup-borr failed:', e.message));
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
           PLAYWRIGHT_EOF
 
-          # Cleanup
           kill $HTTP_PID 2>/dev/null || true
 
-  # ── TEST 5: TAREA 4 — activar pendiente reclasifica jurisdicción ──────────────
+  # ── TEST 5: activar pendiente reclasifica jurisdicción (TEST sheet) ───────────
   test-activar-pendiente:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -844,7 +818,7 @@ jobs:
           npm install playwright@latest
           npx playwright install chromium --with-deps
 
-      - name: Activar pendiente test
+      - name: Activar pendiente test (TEST sheet)
         run: |
           http-server . -p 8787 --cors &
           HTTP_PID=$!
@@ -853,14 +827,27 @@ jobs:
           node - << 'PLAYWRIGHT_EOF'
           const { chromium } = require('playwright');
 
+          // ── Sheet de TEST aislado ─────────────────────────────────────────────
+          const TEST_SHEET_ID = '1666QZMGfHcRontlMBukwa8jq6fSNotmczob_Z4sfc9g';
+          const TEST_GID      = '953772179';
+          const TEST_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${TEST_SHEET_ID}/gviz/tq?tqx=out:csv&gid=${TEST_GID}`;
+
           const WEBAPP_URL   = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
           const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
-          const SHEET_CSV    = 'https://docs.google.com/spreadsheets/d/15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts/gviz/tq?tqx=out:csv&gid=953772179';
+
+          if (!TEST_SHEET_ID) {
+            console.error('FAIL: TEST_SHEET_ID no definido. Abortando para no escribir en producción.');
+            process.exit(1);
+          }
+
+          console.log(`TEST_SHEET_ID: ${TEST_SHEET_ID}`);
 
           async function apiCall(body, label) {
+            // Siempre incluir sheetId → operación sobre TEST sheet
+            const safeBody = Object.assign({}, body, { sheetId: TEST_SHEET_ID });
             for(let attempt=1; attempt<=3; attempt++){
               try {
-                const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(body) });
+                const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(safeBody) });
                 const d = await r.json();
                 console.log(`${label} [attempt ${attempt}]:`, JSON.stringify(d));
                 return d;
@@ -873,14 +860,14 @@ jobs:
           }
 
           let browser;
-          let pendId = null;
+          let pendId   = null;
           let exitCode = 0;
 
           try {
             browser = await chromium.launch({ headless: true });
             const page = await browser.newPage();
 
-            // ── Step 1: Create a PENDIENTES case ─────────────────────────
+            // ── Step 1: Create a PENDIENTES case ─────────────────────────────
             console.log('=== Step 1: Creating PENDIENTES test case ===');
             const TEST_TS = Date.now();
             const pendData = await apiCall({
@@ -895,8 +882,8 @@ jobs:
             pendId = pendData.id;
             console.log(`PASS: Created pendiente case ${pendId} ✓`);
 
-            // ── Step 2: Update jurisdicción via API (simulates activar) ───
-            console.log('=== Step 2: Calling update to reclassify to CIVIL ===');
+            // ── Step 2: Update jurisdicción → CIVIL ──────────────────────────
+            console.log('=== Step 2: Reclassify to CIVIL ===');
             const updData = await apiCall({
               token: WEBAPP_TOKEN,
               action: 'update',
@@ -908,19 +895,19 @@ jobs:
             if(!updData.success) throw new Error(`update jurisdiccion failed: ${updData.error}`);
             console.log(`PASS: update jurisdiccion success (updated=${updData.updated}) ✓`);
 
-            // ── Step 3: Verify jurisdicción in CSV ────────────────────────
-            console.log('=== Step 3: Verifying new jurisdicción in CSV ===');
+            // ── Step 3: Verify jurisdicción in TEST CSV ───────────────────────
+            console.log('=== Step 3: Verifying CIVIL in TEST CSV ===');
             await new Promise(r=>setTimeout(r,3000));
-            const csvResp = await fetch(SHEET_CSV);
+            const csvResp = await fetch(TEST_GVIZ_URL + '&_=' + Date.now());
             const csvText = await csvResp.text();
             const pendRow = csvText.split('\n').find(row => row.includes(pendId));
             if(pendRow && pendRow.toUpperCase().includes('CIVIL')) {
-              console.log(`PASS: "CIVIL" found in CSV row for ${pendId} ✓`);
+              console.log(`PASS: "CIVIL" found in TEST CSV row for ${pendId} ✓`);
             } else {
-              console.log(`Warning: CIVIL not visible in CSV. Row: ${pendRow}`);
+              console.log(`Warning: CIVIL not visible in TEST CSV. Row: ${pendRow}`);
             }
 
-            // ── Step 4: Load app, check Activar button on pendiente cards ─
+            // ── Step 4: Load app, check activar-overlay exists ───────────────
             console.log('=== Step 4: Checking activar-overlay modal exists in DOM ===');
             await page.goto('http://localhost:8787', { waitUntil:'networkidle', timeout:30000 });
             const activarOverlay = await page.locator('#activar-overlay').count();
@@ -933,14 +920,12 @@ jobs:
             console.error('FAIL:', e.message);
             exitCode = 1;
           } finally {
-            // ── Cleanup: always delete test case ─────────────────────────
             console.log('');
-            console.log('=== CLEANUP: Deleting test case ===');
+            console.log('=== CLEANUP: Deleting test case from TEST sheet ===');
             if (pendId) await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: pendId }, 'cleanup-pend').catch(e => console.log('cleanup-pend failed:', e.message));
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
           PLAYWRIGHT_EOF
 
-          # Cleanup
           kill $HTTP_PID 2>/dev/null || true
