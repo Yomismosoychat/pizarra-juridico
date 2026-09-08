@@ -152,6 +152,20 @@ body{background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;paddi
 .btn-hecho:hover{background:#15803d;transform:scale(1.04)}
 .btn-expand{background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:5px;padding:4px 8px;font-size:10px;cursor:pointer;font-family:inherit}
 .btn-expand:hover{background:var(--bg)}
+.btn-trash{background:transparent;color:#dc2626;border:1px solid #dc2626;border-radius:5px;padding:4px 8px;font-size:11px;cursor:pointer;font-family:inherit;margin-left:auto}
+.btn-trash:hover{background:#dc2626;color:#fff}
+.btn-cerrar{background:transparent;color:#6b7280;border:1px solid var(--border);border-radius:5px;padding:4px 8px;font-size:11px;cursor:pointer;font-family:inherit}
+.btn-cerrar:hover{background:#6b7280;color:#fff}
+.btn-activar{background:transparent;color:#2563eb;border:1px solid #2563eb;border-radius:5px;padding:4px 8px;font-size:11px;cursor:pointer;font-family:inherit}
+.btn-activar:hover{background:#2563eb;color:#fff}
+.cat-sep-double{height:0;border-top:3px dashed var(--border);margin:20px 8px 8px;opacity:.5}
+.cat-header-special{background:var(--bg2,rgba(0,0,0,.02))}
+#activar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:300;display:none;align-items:center;justify-content:center}
+#activar-overlay.open{display:flex}
+#activar-modal{background:var(--card);border-radius:10px;padding:20px 24px;min-width:300px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.3);border:1px solid var(--border)}
+#activar-modal h3{font-size:15px;font-weight:700;margin-bottom:14px}
+#activar-juris{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;background:var(--card);color:var(--text);margin-bottom:14px}
+.activar-btns{display:flex;gap:8px;justify-content:flex-end}
 
 /* ═══ EXPANDED DETAIL ═══ */
 .case-detail{display:none;padding:8px 16px 12px 70px;background:var(--card);border-bottom:2px solid var(--border)}
@@ -627,8 +641,13 @@ function render(){
 
 function renderGrouped(cases){
   let h = "";
-  for(const cat of CAT_ORDER){
-    const cc = cases.filter(c=>c.cat===cat);
+
+  // Cats normales: todo excepto "pendiente"; excluir cerrados de cada grupo
+  const mainCats = CAT_ORDER.filter(c => c !== "pendiente");
+
+  for(const cat of mainCats){
+    // Casos activos (excluye cerrados del grupo de origen)
+    const cc = cases.filter(c=>c.cat===cat && c.status!=="cerrado");
     if(!cc.length) continue;
     const info = CATS[cat];
     const isColl = collapsed[cat] !== false;
@@ -658,6 +677,42 @@ function renderGrouped(cases){
       }
     }
   }
+
+  // ── Doble separador visual ──────────────────────────────────────────────
+  h += `<div class="cat-sep-double"></div>`;
+  h += `<div class="cat-sep-double" style="margin-top:4px"></div>`;
+
+  // ── 1º PENDIENTES DE INICIAR ──────────────────────────────────────────
+  {
+    const pendCases = cases.filter(c=>c.cat==="pendiente" && c.status!=="cerrado");
+    const isColl = collapsed["pendiente"] !== false;
+    const info = CATS["pendiente"];
+    h += `<div class="cat-header cat-header-special ${isColl?"collapsed":""}" onclick="toggleCat('pendiente')">
+      <div class="cat-dot" style="background:${info.color}"></div>
+      <span class="cat-label">${info.label}</span>
+      <span class="cat-count">${pendCases.length}</span>
+      <span class="cat-arrow">\u25BC</span>
+    </div>`;
+    if(!isColl){
+      for(const c of pendCases) h += renderCard(c, false);
+    }
+  }
+
+  // ── 2º CASOS CERRADOS (todos, independientemente del cat de origen) ─────
+  {
+    const cerrCases = cases.filter(c=>c.status==="cerrado");
+    const isColl = collapsed["_cerrado"] !== false;
+    h += `<div class="cat-header cat-header-special ${isColl?"collapsed":""}" onclick="toggleCat('_cerrado')">
+      <div class="cat-dot" style="background:#6b7280"></div>
+      <span class="cat-label">\u{1F512} CASOS CERRADOS</span>
+      <span class="cat-count">${cerrCases.length}</span>
+      <span class="cat-arrow">\u25BC</span>
+    </div>`;
+    if(!isColl){
+      for(const c of cerrCases) h += renderCard(c, true);
+    }
+  }
+
   return h;
 }
 
@@ -724,7 +779,10 @@ function renderCard(c, showCat){
   h += `<div class="cc-actions">
     <button class="btn-hecho" onclick="startHecho('${c.id}')">\u2705 HECHO</button>
     <button class="btn-expand" onclick="toggleExpand('${c.id}')">${expanded[c.id]?"\u25B2 Cerrar":"\u25BC Detalle"}</button>
+    ${c.cat==="pendiente"?`<button class="btn-activar" onclick="activarPendiente('${c.id}')">\u25B6\uFE0F Activar</button>`:""}
+    ${c.status!=="cerrado"?`<button class="btn-cerrar" onclick="cerrarCaso('${c.id}')">\u26D4 Cerrar caso</button>`:""}
     ${c.dias?`<span style="font-size:10px;color:var(--text2)">\u23F3 ${esc(c.dias)}</span>`:""}
+    <button class="btn-trash" onclick="borrarCaso('${c.id}',${JSON.stringify(c.name||'')})" title="Eliminar permanentemente">\u{1F5D1}\uFE0F</button>
   </div>`;
 
   // EXPANDED DETAIL
@@ -1575,7 +1633,7 @@ async function doSave(){
 const SHEET_ID = "15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts";
 const SHEET_API = "https://sheets.googleapis.com/v4/spreadsheets/" + SHEET_ID;
 const SYNC_CAT_LABELS = {"civil":"CIVIL","social":"SOCIAL","penal":"PENAL","contadmin":"CONTENCIOSO-ADM","familia":"FAMILIA","expediente":"EXPEDIENTES","cgpj":"CGPJ","tc":"TC/CGPJ","tributario":"TRIBUTARIO","rpatrimonial":"RECLAMACIONES","pendiente":"PENDIENTES","decanato":"DECANATO","externos":"EXTERNOS"};
-const SYNC_STATUS_MAP = {"curso":"En curso","espera":"Esperando respuesta","juicio":"Preparar juicio","actuar":"Actuación pendiente","resuelto":"Resuelto","ganado":"Ganado","perdido":"Perdido"};
+const SYNC_STATUS_MAP = {"curso":"En curso","espera":"Esperando respuesta","juicio":"Preparar juicio","actuar":"Actuación pendiente","resuelto":"Resuelto","ganado":"Ganado","perdido":"Perdido","cerrado":"Cerrado"};
 const SYNC_NEXT_MAP = {"actuar":"Actuar YA","esperar":"Vigilar respuesta","preparar":"Preparar juicio","revisar":"Revisar"};
 
 
@@ -1947,6 +2005,106 @@ function closeNuevoCaso(){
   if(ov) ov.classList.remove("open");
 }
 
+// ── Borrar caso (elimina la fila del Sheet) ────────────────────────────────────
+async function borrarCaso(id, name){
+  if(!confirm(`¿Eliminar permanentemente el caso "${name}"?\n\nEsta acción NO se puede deshacer.`)) return;
+  try {
+    const resp = await fetch(WEBAPP_URL, {
+      method: "POST",
+      body: JSON.stringify({ token: WEBAPP_TOKEN, action: "delete", id: id })
+    });
+    const data = await resp.json();
+    if(data.success){
+      await loadFromSheet();
+    } else {
+      alert("Error al eliminar: " + (data.error || "respuesta vacía"));
+    }
+  } catch(e){
+    alert("Error de red al eliminar: " + (e.message || String(e)));
+  }
+}
+
+// ── Cerrar caso (actualiza Estado → "cerrado" en columna J del Sheet) ─────────────
+// "cerrado" es el valor literal escrito en la columna J (Estado).
+// El caso deja de aparecer en su grupo de origen y pasa al grupo CASOS CERRADOS.
+async function cerrarCaso(id){
+  const c = STATE.cases.find(x=>x.id===id);
+  if(!c) return;
+  if(!confirm(`¿Cerrar el caso "${c.name || id}"?\n\nEl caso pasará al grupo CASOS CERRADOS.`)) return;
+  try {
+    const resp = await fetch(WEBAPP_URL, {
+      method: "POST",
+      body: JSON.stringify({ token: WEBAPP_TOKEN, action: "update", id: id, campo: "estado", valor: "cerrado" })
+    });
+    const data = await resp.json();
+    if(data.success){
+      c.status = "cerrado";
+      render();
+      scheduleSave();
+    } else {
+      alert("Error al cerrar: " + (data.error || "respuesta vacía"));
+    }
+  } catch(e){
+    alert("Error de red: " + (e.message || String(e)));
+  }
+}
+
+// ── Activar caso pendiente (reclasifica jurisdicción) ───────────────────────
+// Abre el modal #activar-overlay con selector dinámico de jurisdicción
+// (excluye "pendiente" y "externos").
+let _activarId = null;
+function activarPendiente(id){
+  _activarId = id;
+  const sel = document.getElementById("activar-juris");
+  sel.innerHTML = "";
+  // Excluir pendiente y externos del selector
+  for(const [key, info] of Object.entries(CATS)){
+    if(key === "pendiente" || key === "externos") continue;
+    const opt = document.createElement("option");
+    opt.value = SYNC_CAT_LABELS[key] || key.toUpperCase();
+    opt.textContent = info.label;
+    sel.appendChild(opt);
+  }
+  document.getElementById("activar-overlay").classList.add("open");
+}
+
+function closeActivar(){
+  document.getElementById("activar-overlay").classList.remove("open");
+  _activarId = null;
+}
+
+async function confirmActivar(){
+  if(!_activarId) return;
+  const newJurisLabel = document.getElementById("activar-juris").value;
+  const id = _activarId;
+  closeActivar();
+
+  // Buscar la clave de cat correspondiente al label seleccionado
+  const newCatKey = CAT_LABEL_TO_KEY[newJurisLabel.toUpperCase()] ||
+                    Object.keys(SYNC_CAT_LABELS).find(k => SYNC_CAT_LABELS[k] === newJurisLabel);
+
+  try {
+    const resp = await fetch(WEBAPP_URL, {
+      method: "POST",
+      body: JSON.stringify({ token: WEBAPP_TOKEN, action: "update", id: id, campo: "jurisdiccion", valor: newJurisLabel })
+    });
+    const data = await resp.json();
+    if(data.success){
+      const c = STATE.cases.find(x=>x.id===id);
+      if(c){
+        if(newCatKey) c.cat = newCatKey;
+        c.status = "curso";
+      }
+      render();
+      scheduleSave();
+    } else {
+      alert("Error al activar: " + (data.error || "respuesta vacía"));
+    }
+  } catch(e){
+    alert("Error de red: " + (e.message || String(e)));
+  }
+}
+
 async function submitNuevoCaso(){
   const get = id => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
   const destino = get("nc-destino");
@@ -2017,4 +2175,16 @@ async function submitNuevoCaso(){
     btn.textContent = "Crear caso";
   }
 }
+
+<div id="activar-overlay">
+  <div id="activar-modal">
+    <h3>Activar caso pendiente</h3>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:10px">Selecciona la jurisdicción a la que se reclasifica este caso:</p>
+    <select id="activar-juris"></select>
+    <div class="activar-btns">
+      <button class="btn-cancel" onclick="closeActivar()">Cancelar</button>
+      <button class="btn-submit" onclick="confirmActivar()">Activar</button>
+    </div>
+  </div>
+</div>
 </script>
