@@ -729,7 +729,18 @@ jobs:
               return true;
             });
             console.log('EXTERNOS header clicked:', externosExpanded);
-            if (externosExpanded) await page.waitForTimeout(800);
+            if (externosExpanded) {
+              // Wait for render() to inject .ext-subgroup-hdr elements into the DOM
+              // (toggleCat calls render() which rebuilds innerHTML — static wait is unreliable)
+              try {
+                await page.waitForFunction(() => {
+                  return document.querySelectorAll('.ext-subgroup-hdr').length > 0;
+                }, { timeout: 8000 });
+                console.log('.ext-subgroup-hdr elements detected in DOM ✓');
+              } catch(e) {
+                console.log('Warning: .ext-subgroup-hdr not detected after 8s:', e.message);
+              }
+            }
 
             const subgroupFound = await page.$$eval('.ext-subgroup-hdr', els =>
               els.some(el => el.textContent.includes('PlaywrightTestPerson'))
