@@ -562,6 +562,13 @@ function renderGastosPanel(){
   else { document.body.insertAdjacentHTML('beforeend', h); }
 }
 
+// ═══ SEARCH DEBOUNCE ═════════════════════════════════════════════════════════
+let _searchTimer = null;
+function handleSearchInput(){
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(render, 220);
+}
+
 // ═══ RENDER ═══
 function render(){
   const app = document.getElementById("app");
@@ -607,7 +614,7 @@ function render(){
     <button class="btn ${view==="reclamacion"?"btn-active":"btn-inactive"}" onclick="setView('reclamacion')">\u{1F4B0} Reclamación</button>
     <button class="btn ${view==="juicios"?"btn-active":"btn-inactive"}" onclick="setView('juicios')">⚖️ Juicios</button>
     <button class="btn ${view==="seguimiento"?"btn-active":"btn-inactive"}" onclick="setView('seguimiento')">📨 Seguimiento</button>
-    <input class="search" id="searchBox" type="text" placeholder="\u{1F50D} Buscar..." value="${esc(filter)}" oninput="render()">
+    <input class="search" id="searchBox" type="text" placeholder="\u{1F50D} Buscar..." value="${esc(filter)}" oninput="handleSearchInput()">
     <button class="load-sheet-btn" onclick="loadFromSheet()">\u{2B07}\u{FE0F} Load Sheet</button>
     <button class="nuevo-caso-btn" onclick="openNuevoCaso()" id="btn-nuevo-caso">+ Nuevo caso</button>
   </div>
