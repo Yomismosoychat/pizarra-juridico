@@ -201,11 +201,13 @@ body{background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;paddi
 .reclam-cat-row td{background:var(--bg);font-weight:700;font-size:12px}
 .reclam-subtotal{font-weight:700;color:var(--alta)}
 .reclam-won{color:var(--esperar);font-weight:700}
-.reclam-sync-btn{background:var(--seguim);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:auto}
-.reclam-sync-btn:hover{opacity:.85}
-.reclam-sync-status{font-size:10px;color:var(--text2);margin-left:8px}
+.load-sheet-btn{background:var(--seguim);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:auto}
+.load-sheet-btn:hover{opacity:.85}
 .nuevo-caso-btn{background:var(--ok,#4caf50);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:4px;white-space:nowrap}
 .nuevo-caso-btn:hover{opacity:.85}
+/* EXTERNOS sub-grupos */
+.ext-subgroup-hdr{display:flex;align-items:center;gap:6px;padding:5px 14px;background:var(--bg2,rgba(255,255,255,.05));border-left:3px solid #9fc5e8;font-size:11px;font-weight:700;color:#9fc5e8;letter-spacing:.05em;cursor:pointer;user-select:none;margin:2px 0}
+.ext-subgroup-hdr .ext-sg-count{opacity:.6;font-weight:400;font-size:10px}
 
 /* ═══ MODAL NUEVO CASO ═══ */
 #nc-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9000;align-items:center;justify-content:center}
@@ -361,11 +363,12 @@ const CATS = {
   tributario:  {label:"TRIBUTARIO / INSS",  color:"#76a5af"},
   rpatrimonial:{label:"RECL. PATRIMONIALES",color:"#c27ba0"},
   pendiente:   {label:"PENDIENTES INICIAR", color:"#999"},
-  decanato:    {label:"DECANATO",           color:"#ffb74d"}
+  decanato:    {label:"DECANATO",           color:"#ffb74d"},
+  externos:    {label:"EXTERNOS",           color:"#9fc5e8"}
 };
 const PRIO_LABELS = {1:"\u{1F534}",2:"\u{1F7E0}",3:"\u{1F7E1}",4:"\u{1F7E2}",5:"\u26AA"};
 const PRIO_NAMES  = {1:"URGENTE",2:"ALTA",3:"NORMAL",4:"BAJA",5:"ESPERAR"};
-const CAT_ORDER = ["civil","social","penal","contadmin","familia","expediente","cgpj","tc","tributario","rpatrimonial","pendiente","decanato"];
+const CAT_ORDER = ["civil","social","penal","contadmin","familia","expediente","cgpj","tc","tributario","rpatrimonial","pendiente","decanato","externos"];
 
 let STATE, expanded = {}, hechoOpen = null, collapsed = {};
 
@@ -591,9 +594,7 @@ function render(){
     <button class="btn ${view==="juicios"?"btn-active":"btn-inactive"}" onclick="setView('juicios')">⚖️ Juicios</button>
     <button class="btn ${view==="seguimiento"?"btn-active":"btn-inactive"}" onclick="setView('seguimiento')">📨 Seguimiento</button>
     <input class="search" id="searchBox" type="text" placeholder="\u{1F50D} Buscar..." value="${esc(filter)}" oninput="render()">
-    <span class="reclam-sync-status" id="sync-status" style="margin-left:auto"></span>
-    <button class="reclam-sync-btn" onclick="syncToSheets()">\u{1F4E4} Sync Sheet</button>
-    <button class="reclam-sync-btn" onclick="loadFromSheet()" style="margin-left:4px">\u{2B07}\u{FE0F} Load Sheet</button>
+    <button class="load-sheet-btn" onclick="loadFromSheet()">\u{2B07}\u{FE0F} Load Sheet</button>
     <button class="nuevo-caso-btn" onclick="openNuevoCaso()" id="btn-nuevo-caso">+ Nuevo caso</button>
   </div>
   <div id="sheet-diag" style="font-size:11px;padding:3px 12px 4px;line-height:1.5;word-break:break-all;background:var(--bg2,rgba(255,255,255,.06))"></div>`;
@@ -639,7 +640,23 @@ function renderGrouped(cases){
       <span class="cat-count">${cc.length}</span>
       <span class="cat-arrow">\u25BC</span>
     </div>`;
-    if(!isColl) for(const c of cc) h += renderCard(c, false);
+    if(!isColl){
+      if(cat === "externos"){
+        // Sub-group by persona prefix (text before first " — ")
+        const subMap = {};
+        for(const c of cc){
+          const persona = (c.name||"").split(" — ")[0].trim() || "Sin asignar";
+          if(!subMap[persona]) subMap[persona] = [];
+          subMap[persona].push(c);
+        }
+        for(const [persona, pCases] of Object.entries(subMap)){
+          h += `<div class="ext-subgroup-hdr">📁 ${esc(persona)} <span class="ext-sg-count">(${pCases.length})</span></div>`;
+          for(const c of pCases) h += renderCard(c, false);
+        }
+      } else {
+        for(const c of cc) h += renderCard(c, false);
+      }
+    }
   }
   return h;
 }
@@ -1533,9 +1550,7 @@ function confirmForense(){
 
 // ═══ SAVE via artifact + SYNC ═══
 let saveTimer = null;
-let syncTimer = null;
-function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(doSave, 1500); scheduleSync(); }
-function scheduleSync(){ clearTimeout(syncTimer); syncTimer = setTimeout(()=>syncToSheets(true), 8000); }
+function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(doSave, 1500); }
 
 async function doSave(){
   try {
@@ -1559,137 +1574,10 @@ async function doSave(){
 // ═══ GOOGLE SHEETS SYNC (ZAPIER RAW API) ═══
 const SHEET_ID = "15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts";
 const SHEET_API = "https://sheets.googleapis.com/v4/spreadsheets/" + SHEET_ID;
-const SYNC_CAT_LABELS = {"civil":"CIVIL","social":"SOCIAL","penal":"PENAL","contadmin":"CONTENCIOSO-ADM","familia":"FAMILIA","expediente":"EXPEDIENTES","cgpj":"CGPJ","tc":"TC/CGPJ","tributario":"TRIBUTARIO","rpatrimonial":"RECLAMACIONES","pendiente":"PENDIENTES","decanato":"DECANATO"};
-const SYNC_CAT_ORDER = ["penal","contadmin","social","civil","tc","cgpj","familia","rpatrimonial","tributario","expediente","decanato","pendiente"];
+const SYNC_CAT_LABELS = {"civil":"CIVIL","social":"SOCIAL","penal":"PENAL","contadmin":"CONTENCIOSO-ADM","familia":"FAMILIA","expediente":"EXPEDIENTES","cgpj":"CGPJ","tc":"TC/CGPJ","tributario":"TRIBUTARIO","rpatrimonial":"RECLAMACIONES","pendiente":"PENDIENTES","decanato":"DECANATO","externos":"EXTERNOS"};
 const SYNC_STATUS_MAP = {"curso":"En curso","espera":"Esperando respuesta","juicio":"Preparar juicio","actuar":"Actuación pendiente","resuelto":"Resuelto","ganado":"Ganado","perdido":"Perdido"};
-const SYNC_URGENCY_MAP = {"red":"\u{1F534} URGENTE","orange":"\u{1F7E0} PRÓXIMO","yellow":"\u{1F7E1} ESPERANDO","green":"✅ HECHO","blue":"\u{1F535} INFO"};
 const SYNC_NEXT_MAP = {"actuar":"Actuar YA","esperar":"Vigilar respuesta","preparar":"Preparar juicio","revisar":"Revisar"};
 
-let syncInProgress = false;
-async function syncToSheets(silent){
-  if(syncInProgress) return;
-  syncInProgress = true;
-  const statusEl = document.getElementById("sync-status");
-  try {
-    const mcp = await window.claude?.use?.("mcp");
-    if(!mcp){
-      // Fuera del Artifact (p. ej. GitHub Pages) no hay puente MCP: la escritura
-      // al Sheet es imposible. Antes se abandonaba en silencio y el botón parecía roto.
-      if(!silent){
-        if(statusEl) statusEl.textContent = "\u26A0\uFE0F Sync no disponible aquí";
-        showToast("\u26A0\uFE0F Escritura al Sheet solo disponible en el Artifact de Claude");
-      }
-      syncInProgress = false; return;
-    }
-    if(statusEl) statusEl.textContent = "⏳ Sincronizando...";
-
-    // Build rows: header + grouped cases with separator rows
-    const hdr = ["ID","Jurisdicción","Tema / Actuación","Órgano","Referencia / nº","REGAGE / Registro","Fecha actuación","Cuantía €","Tipo tarea","Estado","Fecha límite dura","Días para límite","ALERTA","Deriva a →","Notas"];
-    const allRows = [hdr];
-
-    for(const cat of SYNC_CAT_ORDER){
-      const cc = STATE.cases.filter(c=>c.cat===cat);
-      if(!cc.length) continue;
-      allRows.push(Array(15).fill(""));
-      for(const c of cc){
-        const lastStep = c.steps && c.steps.length ? c.steps[c.steps.length-1] : null;
-        const lastDate = lastStep ? lastStep.d : "";
-        let regage = "";
-        if(c.steps) for(const s of c.steps){ const m = String(s.t||"").match(/REGAGE\w+/i); if(m) regage = m[0]; }
-        let deadline = c.nextDate || c.trial || "";
-        let daysLeft = "";
-        if(deadline){
-          try { const dl = new Date(deadline); const now = new Date(); daysLeft = String(Math.ceil((dl - now)/(1000*60*60*24))); } catch(e){}
-        }
-        let deadlineStr = "";
-        if(deadline){ try { const d = new Date(deadline); deadlineStr = d.toLocaleDateString("es-ES"); } catch(e){ deadlineStr = deadline; } }
-
-        allRows.push([
-          c.id,
-          SYNC_CAT_LABELS[c.cat] || c.cat.toUpperCase(),
-          c.name || "",
-          c.court || "",
-          c.ref || "",
-          regage,
-          lastDate,
-          c.amount ? String(c.amount) : "",
-          SYNC_NEXT_MAP[c.nextType] || c.nextType || "—",
-          SYNC_STATUS_MAP[c.status] || c.status || "",
-          deadlineStr,
-          daysLeft,
-          SYNC_URGENCY_MAP[c.urgency] || "",
-          "",
-          c.current || ""
-        ]);
-      }
-    }
-
-    // Pad to at least 65 rows to clear old data
-    while(allRows.length < 65) allRows.push(Array(15).fill(""));
-
-    const range = "PANEL!A1:O" + allRows.length;
-    const body = JSON.stringify({ values: allRows });
-
-    await mcp.callTool("Zapier", "execute_zapier_write_action", {
-      selected_api: "GoogleSheetsV2CLIAPI",
-      action: "_zap_raw_request",
-      tool_name: "google_sheets_make_api_mutating_request",
-      params: {
-        method: "PUT",
-        url: SHEET_API + "/values/" + encodeURIComponent(range),
-        querystring: { valueInputOption: "USER_ENTERED" },
-        headers: { "Content-Type": "application/json" },
-        body: body,
-        fail_on_errors: "true"
-      }
-    });
-
-    // Also update HOY sheet with summary
-    const today = new Date().toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"numeric"});
-    const hoyRows = [
-      ["Pizarra Juridico — Resumen " + today, "", "", ""],
-      ["Total casos", String(STATE.cases.length), "Cuantía total", STATE.cases.reduce((s,c)=>s+(c.amount||0),0).toLocaleString("es-ES")+"€"],
-      ["Urgentes (🔴)", String(STATE.cases.filter(c=>c.urgency==="red").length), "Próximos (🟠)", String(STATE.cases.filter(c=>c.urgency==="orange").length)],
-      ["En espera (🟡)", String(STATE.cases.filter(c=>c.urgency==="yellow"||c.status==="espera").length), "Resueltos (✅)", String(STATE.cases.filter(c=>c.urgency==="green"||c.status==="resuelto"||c.status==="ganado").length)],
-      ["","","",""],
-      ["⚠️ PRÓXIMAS FECHAS LÍMITE","","",""],
-    ];
-    const deadlineCases = STATE.cases.filter(c=>(c.nextDate||c.trial)&&c.status!=="resuelto"&&c.status!=="ganado").sort((a,b)=>{
-      const da = new Date(a.nextDate||a.trial||"2099-01-01");
-      const db = new Date(b.nextDate||b.trial||"2099-01-01");
-      return da-db;
-    }).slice(0,10);
-    for(const c of deadlineCases){
-      const dl = c.nextDate||c.trial;
-      let dlStr = ""; try { dlStr = new Date(dl).toLocaleDateString("es-ES"); } catch(e){ dlStr = dl; }
-      hoyRows.push([c.name, c.court||"", dlStr, c.current||""]);
-    }
-    while(hoyRows.length < 20) hoyRows.push(["","","",""]);
-
-    await mcp.callTool("Zapier", "execute_zapier_write_action", {
-      selected_api: "GoogleSheetsV2CLIAPI",
-      action: "_zap_raw_request",
-      tool_name: "google_sheets_make_api_mutating_request",
-      params: {
-        method: "PUT",
-        url: SHEET_API + "/values/" + encodeURIComponent("HOY!A1:D"+hoyRows.length),
-        querystring: { valueInputOption: "USER_ENTERED" },
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: hoyRows }),
-        fail_on_errors: "true"
-      }
-    });
-
-    STATE.lastSync = new Date().toISOString();
-    if(statusEl) statusEl.textContent = "✅ Sheet " + new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
-    showToast("📤 Google Sheet actualizado");
-  } catch(e){
-    console.warn("Sync failed:", e);
-    if(statusEl) statusEl.textContent = "❌ Error sync";
-    showToast("❌ Error sincronizando Sheet");
-  }
-  syncInProgress = false;
-}
 
 // ═══ LOAD FROM SHEET (pull, vía CSV público — fusiona por Referencia col. E) ═══
 const SHEET_GID = "953772179"; // pestaña PANEL
@@ -1706,7 +1594,6 @@ const WEBAPP_TOKEN = "vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc";
 
 const SYNC_NEXT_MAP_REV = Object.fromEntries(Object.entries(SYNC_NEXT_MAP).map(([k,v])=>[normLabel(v),k]));
 const SYNC_STATUS_MAP_REV = Object.fromEntries(Object.entries(SYNC_STATUS_MAP).map(([k,v])=>[normLabel(v),k]));
-const SYNC_URGENCY_MAP_REV = Object.fromEntries(Object.entries(SYNC_URGENCY_MAP).map(([k,v])=>[normLabel(v.replace(/^\S+\s*/,"")),k]));
 const CAT_LABEL_TO_KEY = (()=>{
   const m = {};
   for(const k of Object.keys(CATS)) m[normLabel(CATS[k].label)] = k;
@@ -1938,22 +1825,21 @@ loadFromSheet();
   <button id="nc-close" onclick="closeNuevoCaso()" title="Cerrar">&times;</button>
   <h2 id="nc-title">➕ Nuevo caso</h2>
   <div class="nc-field">
+    <label>Destino *</label>
+    <select id="nc-destino" onchange="ncDestinoChange()">
+      <option value="existing">Grupo existente</option>
+      <option value="externos">Grupo nuevo: EXTERNOS</option>
+    </select>
+  </div>
+  <div class="nc-field" id="nc-juris-wrap">
     <label>Jurisdicción *</label>
     <select id="nc-juris">
       <option value="">— selecciona —</option>
-      <option value="PENAL">PENAL</option>
-      <option value="CIVIL">CIVIL</option>
-      <option value="SOCIAL">SOCIAL</option>
-      <option value="CONTENCIOSO-ADM">CONTENCIOSO-ADM</option>
-      <option value="FAMILIA">FAMILIA</option>
-      <option value="TC/CGPJ">TC/CGPJ</option>
-      <option value="CGPJ">CGPJ</option>
-      <option value="RECLAMACIONES">RECLAMACIONES</option>
-      <option value="TRIBUTARIO">TRIBUTARIO</option>
-      <option value="EXPEDIENTES">EXPEDIENTES</option>
-      <option value="DECANATO">DECANATO</option>
-      <option value="PENDIENTES">PENDIENTES</option>
     </select>
+  </div>
+  <div class="nc-field" id="nc-persona-wrap" style="display:none">
+    <label>Persona / Caso *</label>
+    <input id="nc-persona" type="text" placeholder="Nombre o referencia del caso externo">
   </div>
   <div class="nc-field">
     <label>Tema / Actuación *</label>
@@ -2011,19 +1897,49 @@ loadFromSheet();
   });
 })();
 
+function ncDestinoChange(){
+  const dest = document.getElementById("nc-destino")?.value;
+  const jurisWrap = document.getElementById("nc-juris-wrap");
+  const personaWrap = document.getElementById("nc-persona-wrap");
+  if(dest === "externos"){
+    if(jurisWrap) jurisWrap.style.display = "none";
+    if(personaWrap) personaWrap.style.display = "";
+  } else {
+    if(jurisWrap) jurisWrap.style.display = "";
+    if(personaWrap) personaWrap.style.display = "none";
+  }
+}
+
 function openNuevoCaso(){
   const ov = document.getElementById("nc-overlay");
   if(!ov) return;
   // Limpiar estado anterior
-  ["nc-juris","nc-tema","nc-organo","nc-ref","nc-fecha","nc-cuantia","nc-tipotarea","nc-fechalimite","nc-notas"]
+  ["nc-tema","nc-organo","nc-ref","nc-fecha","nc-cuantia","nc-tipotarea","nc-fechalimite","nc-notas","nc-persona"]
     .forEach(id => { const el = document.getElementById(id); if(el) el.value = ""; });
   const res = document.getElementById("nc-result");
   if(res){ res.className=""; res.style.display="none"; res.textContent=""; }
   const btn = document.getElementById("nc-submit");
   if(btn){ btn.disabled = false; btn.textContent = "Crear caso"; }
+  // Reset destino selector
+  const destEl = document.getElementById("nc-destino");
+  if(destEl) destEl.value = "existing";
+  ncDestinoChange();
+  // Populate juris from live STATE (excluding externos)
+  const jurisEl = document.getElementById("nc-juris");
+  if(jurisEl && STATE && STATE.cases){
+    const labels = new Set();
+    for(const c of STATE.cases){
+      if(c.cat && c.cat !== "externos" && CATS[c.cat]) labels.add(CATS[c.cat].label);
+    }
+    jurisEl.innerHTML = '<option value="">— selecciona —</option>';
+    for(const label of [...labels].sort()){
+      const opt = document.createElement("option");
+      opt.value = label; opt.textContent = label;
+      jurisEl.appendChild(opt);
+    }
+  }
   ov.classList.add("open");
-  const first = document.getElementById("nc-juris");
-  if(first) setTimeout(()=>first.focus(), 60);
+  setTimeout(()=>document.getElementById("nc-destino")?.focus(), 60);
 }
 
 function closeNuevoCaso(){
@@ -2033,8 +1949,10 @@ function closeNuevoCaso(){
 
 async function submitNuevoCaso(){
   const get = id => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
-  const juris = get("nc-juris");
-  const tema  = get("nc-tema");
+  const destino = get("nc-destino");
+  const persona = get("nc-persona");
+  let juris = get("nc-juris");
+  let tema  = get("nc-tema");
   const fecha = get("nc-fecha");
 
   const res = document.getElementById("nc-result");
@@ -2044,7 +1962,13 @@ async function submitNuevoCaso(){
     res.style.display = "block";
   }
 
-  if(!juris){ showRes("⚠️ Selecciona una jurisdicción.", false); return; }
+  if(destino === "externos"){
+    if(!persona){ showRes("⚠️ El campo Persona / Caso es obligatorio.", false); return; }
+    juris = "EXTERNOS";
+    tema = persona + (tema ? " — " + tema : "");
+  } else {
+    if(!juris){ showRes("⚠️ Selecciona una jurisdicción.", false); return; }
+  }
   if(!tema)  { showRes("⚠️ El campo Tema/Actuación es obligatorio.", false); return; }
   if(!fecha) { showRes("⚠️ La fecha de actuación es obligatoria.", false); return; }
 

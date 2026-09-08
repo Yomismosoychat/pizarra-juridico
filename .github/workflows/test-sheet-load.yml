@@ -432,3 +432,240 @@ jobs:
 
           # Cleanup
           kill $HTTP_PID 2>/dev/null || true
+
+  # ── TEST 3: EXTERNOS group — create, verify subcarpeta, check EN JUEGO, delete ──
+  test-externos-group:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: test-form-submit
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install http-server and Playwright
+        run: |
+          npm install -g http-server
+          npm install playwright@latest
+          npx playwright install chromium --with-deps
+
+      - name: EXTERNOS test (create → verify subgroup → check cuantia → delete)
+        run: |
+          http-server . -p 8787 --cors &
+          HTTP_PID=$!
+          sleep 2
+          echo "http-server PID: $HTTP_PID"
+
+          node - <<'PLAYWRIGHT_EOF'
+          const { chromium } = require('playwright');
+
+          const SHEET_ID    = '15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts';
+          const SHEET_GID   = '953772179';
+          const GVIZ_URL    = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SHEET_GID}`;
+          const WEBAPP_URL  = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
+          const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
+
+          const TEST_PERSONA = 'PlaywrightTestPerson';
+          const TEST_TEMA    = 'Consulta de prueba CI';
+          const TEST_CUANTIA = '1234';
+          const today = new Date();
+          const fechaHoy = `${String(today.getDate()).padStart(2,'0')}/${String(today.getMonth()+1).padStart(2,'0')}/${today.getFullYear()}`;
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true, args: ['--no-sandbox','--disable-setuid-sandbox'] });
+            const page = await browser.newPage();
+            page.on('console', msg => console.log(`BROWSER [${msg.type().toUpperCase()}]`, msg.text()));
+            page.on('pageerror', err => console.log('BROWSER [PAGEERROR]', err.message));
+
+            // ── Step 1: Open page, wait for initial load ──
+            console.log('=== Step 1: Opening page ===');
+            await page.goto('http://localhost:8787/index.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForFunction(() => {
+              const el = document.getElementById('sheet-diag');
+              if (!el) return false;
+              const t = el.textContent || '';
+              return t.startsWith('✅') || t.startsWith('❌') || t.startsWith('⚠️');
+            }, { timeout: 30000 });
+            const diagInit = await page.$eval('#sheet-diag', el => el.textContent || '');
+            console.log('Initial diag:', diagInit.slice(0, 120));
+
+            const totalInitMatch = diagInit.match(/total:\s*(\d+)/);
+            const totalInit = totalInitMatch ? parseInt(totalInitMatch[1]) : null;
+            console.log('Initial total:', totalInit);
+
+            // ── Step 2: Open modal, select EXTERNOS ──
+            console.log('=== Step 2: Opening modal → EXTERNOS ===');
+            const btnNuevo = await page.$('#btn-nuevo-caso, .nuevo-caso-btn');
+            if (!btnNuevo) { console.error('FAIL: #btn-nuevo-caso not found'); await browser.close(); process.exit(1); }
+            await btnNuevo.click();
+            await page.waitForTimeout(400);
+
+            const overlayOpen = await page.$eval('#nc-overlay', el => el.classList.contains('open')).catch(() => false);
+            if (!overlayOpen) { console.error('FAIL: Modal did not open'); await browser.close(); process.exit(1); }
+            console.log('Modal opened ✓');
+
+            // Select EXTERNOS destination
+            await page.selectOption('#nc-destino', 'externos');
+            await page.waitForTimeout(200);
+
+            // Verify persona field is visible, juris field is hidden
+            const personaVisible = await page.$eval('#nc-persona-wrap', el => el.style.display !== 'none').catch(() => false);
+            const jurisHidden    = await page.$eval('#nc-juris-wrap',   el => el.style.display === 'none').catch(() => false);
+            console.log('Persona field visible:', personaVisible, '| Juris hidden:', jurisHidden);
+            if (!personaVisible) { console.error('FAIL: #nc-persona-wrap not visible after EXTERNOS selection'); await browser.close(); process.exit(1); }
+
+            // ── Step 3: Fill form ──
+            console.log('=== Step 3: Filling EXTERNOS form ===');
+            await page.fill('#nc-persona', TEST_PERSONA);
+            await page.fill('#nc-tema', TEST_TEMA);
+            await page.fill('#nc-fecha', fechaHoy);
+            await page.fill('#nc-cuantia', TEST_CUANTIA);
+            console.log(`Persona: ${TEST_PERSONA} | Tema: ${TEST_TEMA} | Cuantía: ${TEST_CUANTIA} ✓`);
+
+            // ── Step 4: Submit ──
+            console.log('=== Step 4: Submitting ===');
+            await page.click('#nc-submit');
+            await page.waitForFunction(() => {
+              const el = document.getElementById('nc-result');
+              if (!el) return false;
+              const t = el.textContent || '';
+              return t.includes('✅') || t.includes('❌') || t.toLowerCase().includes('error');
+            }, { timeout: 35000 });
+            const resultText = await page.$eval('#nc-result', el => el.textContent || '');
+            console.log('Form result:', resultText);
+
+            if (!resultText.includes('✅')) {
+              console.error('FAIL: Form did not return success:', resultText);
+              await browser.close();
+              process.exit(1);
+            }
+
+            const idMatch = resultText.match(/ID:\s*([a-z0-9\-]+)/i);
+            const newId = idMatch ? idMatch[1] : null;
+            console.log('New ID:', newId);
+            if (!newId) { console.error('FAIL: Could not extract ID from result:', resultText); await browser.close(); process.exit(1); }
+
+            // ── Step 5: Wait for auto-reload ──
+            console.log('=== Step 5: Waiting for auto-reload ===');
+            try {
+              await page.waitForFunction(() => {
+                const el = document.getElementById('nc-overlay');
+                return el && !el.classList.contains('open');
+              }, { timeout: 12000 });
+              console.log('Modal closed ✓');
+            } catch(e) { console.log('Warning: modal did not close within 12s'); }
+
+            let updatedDiag = '';
+            try {
+              await page.waitForFunction(
+                (prev) => {
+                  const el = document.getElementById('sheet-diag');
+                  if (!el) return false;
+                  const t = el.textContent || '';
+                  return (t.startsWith('✅') || t.startsWith('❌')) && t !== prev;
+                },
+                diagInit,
+                { timeout: 30000 }
+              );
+              updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '');
+              console.log('Updated diag:', updatedDiag.slice(0, 120));
+            } catch(e) {
+              updatedDiag = await page.$eval('#sheet-diag', el => el.textContent || '').catch(() => '');
+              console.log('Warning: diag timeout. Current:', updatedDiag.slice(0, 120));
+            }
+
+            // ── Step 6: Verify EXTERNOS group renders with sub-carpeta ──
+            console.log('=== Step 6: Verify EXTERNOS subgroup in DOM ===');
+            const bodyText = await page.evaluate(() => document.body.innerText);
+            const externosSection = bodyText.match(/EXTERNOS[\s\S]{0,800}/i);
+            console.log('EXTERNOS section:', externosSection ? externosSection[0].slice(0, 400) : '(not found)');
+
+            // Check subgroup header with TEST_PERSONA
+            const subgroupFound = await page.$$eval('.ext-subgroup-hdr', els =>
+              els.some(el => el.textContent.includes('PlaywrightTestPerson'))
+            ).catch(() => false);
+            console.log('Subgroup header with persona found:', subgroupFound);
+            if (!subgroupFound) {
+              console.error('FAIL: EXTERNOS subgroup header for PlaywrightTestPerson not found in DOM');
+              await browser.close();
+              process.exit(1);
+            }
+            console.log('PASS: EXTERNOS subcarpeta rendered correctly ✓');
+
+            // ── Step 7: Verify total +1 ──
+            console.log('=== Step 7: Verify total +1 ===');
+            const totalAfterMatch = updatedDiag.match(/total:\s*(\d+)/);
+            const totalAfter = totalAfterMatch ? parseInt(totalAfterMatch[1]) : null;
+            console.log(`Total before: ${totalInit}, after: ${totalAfter}`);
+            if (totalInit !== null && totalAfter !== null) {
+              if (totalAfter === totalInit + 1) {
+                console.log('PASS: Total +1 ✓');
+              } else {
+                console.error(`FAIL: Expected total ${totalInit + 1}, got ${totalAfter}`);
+                await browser.close();
+                process.exit(1);
+              }
+            } else {
+              console.log('Warning: could not compare totals, skipping count check');
+            }
+
+            await browser.close();
+
+            // ── Step 8: Verify ID in gviz CSV ──
+            console.log('=== Step 8: Verify ID in gviz CSV ===');
+            await new Promise(r => setTimeout(r, 3000));
+            let csvAfter = '';
+            let idFound = false;
+            for (let i = 0; i < 5 && !idFound; i++) {
+              try {
+                const r = await fetch(GVIZ_URL + '&_=' + Date.now());
+                csvAfter = await r.text();
+                if (csvAfter.includes(newId)) { idFound = true; }
+                else { console.log(`Attempt ${i+1}: ID not yet in CSV, waiting 4s...`); await new Promise(r => setTimeout(r, 4000)); }
+              } catch(e) { console.log(`Attempt ${i+1}: gviz error: ${e.message}`); await new Promise(r => setTimeout(r, 4000)); }
+            }
+            if (!idFound) { console.error(`FAIL: ID "${newId}" not found in gviz CSV`); process.exit(1); }
+            console.log(`PASS: ID "${newId}" confirmed in Sheet via gviz ✓`);
+
+            // Also verify cuantía in the CSV row
+            const csvLines = csvAfter.split('\n');
+            const ourRow = csvLines.find(l => l.includes(newId));
+            console.log('Our CSV row:', ourRow ? ourRow.slice(0, 200) : '(not found)');
+            if (ourRow && ourRow.includes(TEST_CUANTIA)) {
+              console.log(`PASS: Cuantía ${TEST_CUANTIA} confirmed in CSV row ✓`);
+            } else {
+              console.log(`Warning: cuantía ${TEST_CUANTIA} not clearly visible in CSV row`);
+            }
+
+            // ── Step 9: DELETE test row via Web App ──
+            console.log('=== Step 9: Deleting test row ===');
+            try {
+              const delResp = await fetch(WEBAPP_URL, {
+                method: 'POST',
+                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id: newId })
+              });
+              const delData = await delResp.json();
+              console.log('Delete response:', JSON.stringify(delData));
+              if (delData.success && delData.deleted) {
+                console.log(`PASS: Test row "${newId}" deleted ✓`);
+              } else if (delData.success) {
+                console.log(`Warning: delete returned success but deleted=false (row may not have been found)`);
+              } else {
+                console.log(`Warning: delete failed: ${delData.error}`);
+              }
+            } catch(e) {
+              console.log(`Warning: could not delete test row: ${e.message}`);
+            }
+
+            console.log('');
+            console.log('ALL EXTERNOS TESTS PASSED ✓');
+          })();
+          PLAYWRIGHT_EOF
+
+          # Cleanup
+          kill $HTTP_PID 2>/dev/null || true
