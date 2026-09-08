@@ -562,11 +562,67 @@ function renderGastosPanel(){
   else { document.body.insertAdjacentHTML('beforeend', h); }
 }
 
-// ═══ SEARCH DEBOUNCE ═════════════════════════════════════════════════════════
+// ═══ SEARCH DEBOUNCE & HISTORY ═══════════════════════════════════════════════
 let _searchTimer = null;
 function handleSearchInput(){
   clearTimeout(_searchTimer);
   _searchTimer = setTimeout(render, 220);
+}
+
+var SEARCH_HIST_KEY = "pizarraSearchHistory";
+function _getSearchHistory(){ try{ return JSON.parse(localStorage.getItem(SEARCH_HIST_KEY)||"[]"); }catch(e){ return []; } }
+function _saveSearchHistory(val){
+  if(!val) return;
+  var h = _getSearchHistory().filter(function(x){ return x !== val; });
+  h.unshift(val);
+  if(h.length > 20) h = h.slice(0,20);
+  try{ localStorage.setItem(SEARCH_HIST_KEY, JSON.stringify(h)); }catch(e){}
+}
+
+function attachSearchHistory(inputEl, onApply){
+  if(!inputEl || inputEl._shAttached) return;
+  inputEl._shAttached = true;
+  var _drop = null;
+
+  function closeDropdown(){ if(_drop){ _drop.remove(); _drop = null; } }
+
+  function showDropdown(){
+    closeDropdown();
+    var hist = _getSearchHistory();
+    if(!hist.length) return;
+    var rect = inputEl.getBoundingClientRect();
+    _drop = document.createElement("div");
+    _drop.setAttribute("id","_shDrop");
+    _drop.style.cssText = "position:fixed;top:"+(rect.bottom+2)+"px;left:"+rect.left+"px;"
+      +"min-width:"+rect.width+"px;max-height:220px;overflow-y:auto;"
+      +"background:var(--card);border:1px solid var(--border);"
+      +"border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);z-index:9999;font-size:12px";
+    hist.forEach(function(item){
+      var row = document.createElement("div");
+      row.textContent = item;
+      row.style.cssText = "padding:7px 12px;cursor:pointer;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+      row.addEventListener("mouseenter",function(){ row.style.background="var(--bg2)"; });
+      row.addEventListener("mouseleave",function(){ row.style.background=""; });
+      row.addEventListener("mousedown",function(e){
+        e.preventDefault();
+        inputEl.value = item;
+        closeDropdown();
+        onApply(item);
+      });
+      _drop.appendChild(row);
+    });
+    document.body.appendChild(_drop);
+  }
+
+  inputEl.addEventListener("focus",function(){ if(!inputEl.value) showDropdown(); });
+  inputEl.addEventListener("blur",function(){
+    if(inputEl.value) _saveSearchHistory(inputEl.value);
+    setTimeout(closeDropdown, 160);
+  });
+  inputEl.addEventListener("input",function(){ if(inputEl.value) closeDropdown(); else showDropdown(); });
+  document.addEventListener("click",function(e){
+    if(_drop && !_drop.contains(e.target) && e.target !== inputEl) closeDropdown();
+  },{ passive:true });
 }
 
 // ═══ RENDER ═══
@@ -661,6 +717,12 @@ function render(){
       }
     }
   }
+
+  // Enganchar historial de búsqueda a los inputs presentes en el DOM actual
+  var _sbEl = document.getElementById("searchBox");
+  if(_sbEl) attachSearchHistory(_sbEl, function(v){ clearTimeout(_searchTimer); render(); });
+  var _sSegEl = document.getElementById("segSearchBox");
+  if(_sSegEl) attachSearchHistory(_sSegEl, function(v){ segFilter.search = v; clearTimeout(_searchTimer); render(); });
 }
 
 function renderGrouped(cases){
@@ -1282,7 +1344,7 @@ function renderSegEmails(allEmails){
   for(const inst of institutions) h += '<option value="' + esc(inst) + '" ' + (segFilter.institution===inst?'selected':'') + '>' + esc(inst) + '</option>';
   h += '</select>';
   h += '<select onchange="segFilter.status=this.value;render()"><option value="all">Todo</option><option value="alert" ' + (segFilter.status==='alert'?'selected':'') + '>\u{1F534} Alertas</option><option value="pending" ' + (segFilter.status==='pending'?'selected':'') + '>⏳ Pendientes</option><option value="responded" ' + (segFilter.status==='responded'?'selected':'') + '>✅ Contestados</option></select>';
-  h += '<input type="text" placeholder="\u{1F50D} Buscar..." value="' + esc(segFilter.search) + '" oninput="segFilter.search=this.value;render()" style="min-width:140px">';
+  h += '<input type="text" placeholder="\u{1F50D} Buscar..." value="' + esc(segFilter.search) + '" id="segSearchBox" oninput="segFilter.search=this.value;handleSearchInput()" style="min-width:140px">';
   h += '<span style="font-size:11px;color:var(--text2);margin-left:auto">' + filtered.length + ' de ' + allEmails.length + '</span>';
   h += '</div>';
 
@@ -1365,7 +1427,7 @@ function renderSegEscritos(allEscritos){
   for(const inst of institutions) h += '<option value="' + esc(inst) + '" ' + (segFilter.institution===inst?'selected':'') + '>' + esc(inst) + '</option>';
   h += '</select>';
   h += '<select onchange="segFilter.status=this.value;render()"><option value="all">Todo</option><option value="alert" ' + (segFilter.status==='alert'?'selected':'') + '>\u{1F534} Alertas</option><option value="pending" ' + (segFilter.status==='pending'?'selected':'') + '>⏳ Pendientes</option><option value="responded" ' + (segFilter.status==='responded'?'selected':'') + '>✅ Contestados</option></select>';
-  h += '<input type="text" placeholder="\u{1F50D} Buscar..." value="' + esc(segFilter.search) + '" oninput="segFilter.search=this.value;render()" style="min-width:140px">';
+  h += '<input type="text" placeholder="\u{1F50D} Buscar..." value="' + esc(segFilter.search) + '" id="segSearchBox" oninput="segFilter.search=this.value;handleSearchInput()" style="min-width:140px">';
   h += '<span style="font-size:11px;color:var(--text2);margin-left:auto">' + filtered.length + ' de ' + allEscritos.length + '</span>';
   h += '</div>';
 
@@ -1441,7 +1503,7 @@ function renderSegReg(allReg){
   for(const inst of institutions) h += '<option value="' + esc(inst) + '" ' + (segFilter.institution===inst?'selected':'') + '>' + esc(inst) + '</option>';
   h += '</select>';
   h += '<select onchange="segFilter.status=this.value;render()"><option value="all">Todo</option><option value="alert" ' + (segFilter.status==='alert'?'selected':'') + '>\u{1F534} Alertas</option><option value="pending" ' + (segFilter.status==='pending'?'selected':'') + '>⏳ Pendientes</option><option value="responded" ' + (segFilter.status==='responded'?'selected':'') + '>✅ Contestados</option></select>';
-  h += '<input type="text" placeholder="\u{1F50D} Buscar..." value="' + esc(segFilter.search) + '" oninput="segFilter.search=this.value;render()" style="min-width:140px">';
+  h += '<input type="text" placeholder="\u{1F50D} Buscar..." value="' + esc(segFilter.search) + '" id="segSearchBox" oninput="segFilter.search=this.value;handleSearchInput()" style="min-width:140px">';
   h += '<span style="font-size:11px;color:var(--text2);margin-left:auto">' + filtered.length + ' de ' + allReg.length + '</span>';
   h += '</div>';
 
