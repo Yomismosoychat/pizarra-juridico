@@ -131,7 +131,7 @@ jobs:
           # Cleanup
           kill $HTTP_PID 2>/dev/null || true
 
-  # ── TEST 2: Form submit → new row in Sheet ─────────────────────────────────
+  # ── TEST 2: Form submit → new row in Sheet (with cleanup) ─────────────────
   test-form-submit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -152,7 +152,7 @@ jobs:
           npm install playwright@latest
           npx playwright install chromium --with-deps
 
-      - name: Form submit test (real Web App + gviz verification)
+      - name: Form submit test (real Web App + gviz verification + cleanup)
         run: |
           http-server . -p 8787 --cors &
           HTTP_PID=$!
@@ -162,9 +162,11 @@ jobs:
           node - <<'PLAYWRIGHT_EOF'
           const { chromium } = require('playwright');
 
-          const SHEET_ID  = '15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts';
-          const SHEET_GID = '953772179';
-          const GVIZ_URL  = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SHEET_GID}`;
+          const SHEET_ID   = '15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts';
+          const SHEET_GID  = '953772179';
+          const GVIZ_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SHEET_GID}`;
+          const WEBAPP_URL  = 'https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec';
+          const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
 
           // Today's date in DD/MM/YYYY (Spain format)
           const today = new Date();
@@ -174,7 +176,26 @@ jobs:
           console.log(`Test date: ${fechaHoy}`);
           console.log(`Test tema: ${temaTest}`);
 
-          (async () => {
+          // ── Guaranteed cleanup helper ─────────────────────────────────────
+          async function deleteTestRow(id) {
+            if (!id) return;
+            try {
+              const r = await fetch(WEBAPP_URL, {
+                method: 'POST',
+                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id })
+              });
+              const d = await r.json();
+              console.log(`Cleanup ${id}: deleted=${d.deleted} success=${d.success}`);
+            } catch(e) {
+              console.log(`Cleanup ${id} failed (non-fatal): ${e.message}`);
+            }
+          }
+
+          let browser;
+          let newId = null;
+          let exitCode = 0;
+
+          try {
             // ── Step 0: Read gviz CSV before submit (to get baseline total) ──
             console.log('');
             console.log('=== Step 0: Fetching gviz CSV (baseline) ===');
@@ -182,14 +203,14 @@ jobs:
             try {
               const r = await fetch(GVIZ_URL);
               csvBefore = await r.text();
-              const rowsBefore = csvBefore.trim().split('\n').filter(l => l.trim()).length - 1; // minus header
+              const rowsBefore = csvBefore.trim().split('\n').filter(l => l.trim()).length - 1;
               console.log(`Baseline: ${rowsBefore} data rows in Sheet`);
             } catch(e) {
               console.log('Warning: could not fetch gviz before submit:', e.message);
             }
 
             // ── Step 1: Open page, wait for initial Sheet load ──
-            const browser = await chromium.launch({
+            browser = await chromium.launch({
               headless: true,
               args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
@@ -205,7 +226,6 @@ jobs:
               timeout: 30000
             });
 
-            // Wait for initial sheet load
             console.log('Waiting for initial Sheet load...');
             let initialDiag = '';
             try {
@@ -221,7 +241,6 @@ jobs:
               console.log('Warning: timeout waiting for initial sheet-diag');
             }
 
-            // Extract initial total from diag (format: "✅ N actualizadas, M nuevas | total: T | ...")
             let totalBefore = null;
             const totalMatch = initialDiag.match(/total:\s*(\d+)/);
             if (totalMatch) totalBefore = parseInt(totalMatch[1]);
@@ -231,40 +250,23 @@ jobs:
             console.log('');
             console.log('=== Step 2: Opening + Nuevo caso modal ===');
             const btnNuevo = await page.$('#btn-nuevo-caso, .nuevo-caso-btn');
-            if (!btnNuevo) {
-              console.error('FAIL: button #btn-nuevo-caso not found in DOM');
-              await browser.close();
-              process.exit(1);
-            }
+            if (!btnNuevo) throw new Error('button #btn-nuevo-caso not found in DOM');
             await btnNuevo.click();
             await page.waitForTimeout(300);
 
-            // Verify modal is open
             const overlayVisible = await page.$eval('#nc-overlay', el => el.classList.contains('open')).catch(() => false);
-            if (!overlayVisible) {
-              console.error('FAIL: #nc-overlay did not open after button click');
-              await browser.close();
-              process.exit(1);
-            }
+            if (!overlayVisible) throw new Error('#nc-overlay did not open after button click');
             console.log('Modal opened ✓');
 
             // ── Step 3: Fill form ──
             console.log('');
             console.log('=== Step 3: Filling form ===');
-
-            // Jurisdicción select → first real option (dynamic dropdown, index-based)
             await page.selectOption('#nc-juris', { index: 1 });
             console.log('Jurisdicción set to first available option ✓');
-
-            // Tema (required)
             await page.fill('#nc-tema', temaTest);
             console.log(`Tema set to: ${temaTest} ✓`);
-
-            // Fecha actuación (required)
             await page.fill('#nc-fecha', fechaHoy);
             console.log(`Fecha actuación set to: ${fechaHoy} ✓`);
-
-            // Optional fields
             await page.fill('#nc-organo', 'Playwright CI').catch(() => {});
             await page.fill('#nc-notas', 'Automated test row — safe to delete').catch(() => {});
 
@@ -274,7 +276,6 @@ jobs:
             await page.click('#nc-submit');
             console.log('Submit clicked. Waiting for response...');
 
-            // Wait for result div to show final success ✅ or error ❌ (not the loading spinner ⏳)
             let resultText = '';
             try {
               await page.waitForFunction(() => {
@@ -294,29 +295,16 @@ jobs:
             console.log(resultText);
             console.log('===================');
 
-            if (!resultText.includes('✅')) {
-              console.error('FAIL: Form submit did not return success (✅)');
-              console.error('Result was:', resultText);
-              await browser.close();
-              process.exit(1);
-            }
+            if (!resultText.includes('✅')) throw new Error(`Form submit did not return success (✅). Result: ${resultText}`);
 
-            // Extract generated ID from result text
             const idMatch = resultText.match(/ID:\s*([a-z0-9\-]+)/i);
-            const newId = idMatch ? idMatch[1] : null;
+            newId = idMatch ? idMatch[1] : null;
             console.log(`New ID returned by Web App: ${newId}`);
-
-            if (!newId) {
-              console.error('FAIL: Could not extract new ID from result:', resultText);
-              await browser.close();
-              process.exit(1);
-            }
+            if (!newId) throw new Error(`Could not extract new ID from result: ${resultText}`);
 
             // ── Step 5: Wait for loadFromSheet() to reload after 1.2s delay ──
             console.log('');
             console.log('=== Step 5: Waiting for page to reload from Sheet ===');
-            // loadFromSheet() fires 1.2s after success, then closes modal
-            // Wait for modal to close (nc-overlay loses .open class)
             try {
               await page.waitForFunction(() => {
                 const el = document.getElementById('nc-overlay');
@@ -327,10 +315,8 @@ jobs:
               console.log('Warning: modal did not close within 10s');
             }
 
-            // Then wait for sheet-diag to update
             let updatedDiag = '';
             try {
-              // Wait for diag to change from its initial value
               if (initialDiag) {
                 await page.waitForFunction(
                   (prev) => {
@@ -357,9 +343,6 @@ jobs:
               console.log('Warning: timeout waiting for updated diag. Current:', updatedDiag.slice(0, 120));
             }
 
-            await browser.close();
-
-            // Extract updated total
             let totalAfter = null;
             const totalAfterMatch = updatedDiag.match(/total:\s*(\d+)/);
             if (totalAfterMatch) totalAfter = parseInt(totalAfterMatch[1]);
@@ -372,8 +355,7 @@ jobs:
               if (totalAfter === totalBefore + 1) {
                 console.log(`PASS: Total went from ${totalBefore} → ${totalAfter} (+1) ✓`);
               } else {
-                console.error(`FAIL: Expected total ${totalBefore + 1}, got ${totalAfter}`);
-                process.exit(1);
+                throw new Error(`Expected total ${totalBefore + 1}, got ${totalAfter}`);
               }
             } else {
               console.log(`Warning: could not compare totals (before=${totalBefore}, after=${totalAfter}). Skipping count check.`);
@@ -382,25 +364,22 @@ jobs:
             // ── Step 7: Verify new ID in gviz CSV ──
             console.log('');
             console.log('=== Step 7: Verifying new ID in gviz CSV ===');
-            // Wait a moment for Sheet propagation
             await new Promise(r => setTimeout(r, 3000));
 
             let csvAfter = '';
-            let attempts = 0;
             let idFound = false;
-            while (attempts < 5 && !idFound) {
-              attempts++;
+            for (let attempts = 0; attempts < 5 && !idFound; attempts++) {
               try {
                 const r = await fetch(GVIZ_URL + '&_=' + Date.now());
                 csvAfter = await r.text();
                 if (csvAfter.includes(newId)) {
                   idFound = true;
                 } else {
-                  console.log(`Attempt ${attempts}: ID not yet in CSV, waiting 4s...`);
+                  console.log(`Attempt ${attempts+1}: ID not yet in CSV, waiting 4s...`);
                   await new Promise(r => setTimeout(r, 4000));
                 }
               } catch(e) {
-                console.log(`Attempt ${attempts}: gviz fetch error: ${e.message}`);
+                console.log(`Attempt ${attempts+1}: gviz fetch error: ${e.message}`);
                 await new Promise(r => setTimeout(r, 4000));
               }
             }
@@ -416,18 +395,27 @@ jobs:
             console.log('=======================');
 
             if (!idFound) {
-              console.error(`FAIL: New ID "${newId}" not found in gviz CSV after ${attempts} attempts.`);
-              // Show last 3 rows of CSV for debugging
               const lines = csvAfter.trim().split('\n');
               console.error('Last 3 CSV rows:');
               lines.slice(-3).forEach(l => console.error(' ', l.slice(0, 120)));
-              process.exit(1);
+              throw new Error(`New ID "${newId}" not found in gviz CSV after 5 attempts.`);
             }
 
             console.log('');
             console.log(`PASS: New ID "${newId}" confirmed in Google Sheet via gviz ✓`);
             console.log('ALL FORM SUBMIT TESTS PASSED ✓');
-          })();
+
+          } catch(e) {
+            console.error('FAIL:', e.message);
+            exitCode = 1;
+          } finally {
+            // ── Cleanup: always delete test row ──────────────────────────────
+            console.log('');
+            console.log('=== CLEANUP: Deleting test row ===');
+            await deleteTestRow(newId);
+            if (browser) await browser.close().catch(() => {});
+            process.exit(exitCode);
+          }
           PLAYWRIGHT_EOF
 
           # Cleanup
@@ -476,8 +464,26 @@ jobs:
           const today = new Date();
           const fechaHoy = `${String(today.getDate()).padStart(2,'0')}/${String(today.getMonth()+1).padStart(2,'0')}/${today.getFullYear()}`;
 
-          (async () => {
-            const browser = await chromium.launch({ headless: true, args: ['--no-sandbox','--disable-setuid-sandbox'] });
+          async function deleteRow(id) {
+            if (!id) return;
+            try {
+              const r = await fetch(WEBAPP_URL, {
+                method: 'POST',
+                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id })
+              });
+              const d = await r.json();
+              console.log(`Cleanup ${id}: deleted=${d.deleted} success=${d.success}`);
+            } catch(e) {
+              console.log(`Cleanup ${id} failed (non-fatal): ${e.message}`);
+            }
+          }
+
+          let browser;
+          let newId = null;
+          let exitCode = 0;
+
+          try {
+            browser = await chromium.launch({ headless: true, args: ['--no-sandbox','--disable-setuid-sandbox'] });
             const page = await browser.newPage();
             page.on('console', msg => console.log(`BROWSER [${msg.type().toUpperCase()}]`, msg.text()));
             page.on('pageerror', err => console.log('BROWSER [PAGEERROR]', err.message));
@@ -501,23 +507,21 @@ jobs:
             // ── Step 2: Open modal, select EXTERNOS ──
             console.log('=== Step 2: Opening modal → EXTERNOS ===');
             const btnNuevo = await page.$('#btn-nuevo-caso, .nuevo-caso-btn');
-            if (!btnNuevo) { console.error('FAIL: #btn-nuevo-caso not found'); await browser.close(); process.exit(1); }
+            if (!btnNuevo) throw new Error('#btn-nuevo-caso not found');
             await btnNuevo.click();
             await page.waitForTimeout(400);
 
             const overlayOpen = await page.$eval('#nc-overlay', el => el.classList.contains('open')).catch(() => false);
-            if (!overlayOpen) { console.error('FAIL: Modal did not open'); await browser.close(); process.exit(1); }
+            if (!overlayOpen) throw new Error('Modal did not open');
             console.log('Modal opened ✓');
 
-            // Select EXTERNOS destination
             await page.selectOption('#nc-destino', 'externos');
             await page.waitForTimeout(200);
 
-            // Verify persona field is visible, juris field is hidden
             const personaVisible = await page.$eval('#nc-persona-wrap', el => el.style.display !== 'none').catch(() => false);
             const jurisHidden    = await page.$eval('#nc-juris-wrap',   el => el.style.display === 'none').catch(() => false);
             console.log('Persona field visible:', personaVisible, '| Juris hidden:', jurisHidden);
-            if (!personaVisible) { console.error('FAIL: #nc-persona-wrap not visible after EXTERNOS selection'); await browser.close(); process.exit(1); }
+            if (!personaVisible) throw new Error('#nc-persona-wrap not visible after EXTERNOS selection');
 
             // ── Step 3: Fill form ──
             console.log('=== Step 3: Filling EXTERNOS form ===');
@@ -539,16 +543,12 @@ jobs:
             const resultText = await page.$eval('#nc-result', el => el.textContent || '');
             console.log('Form result:', resultText);
 
-            if (!resultText.includes('✅')) {
-              console.error('FAIL: Form did not return success:', resultText);
-              await browser.close();
-              process.exit(1);
-            }
+            if (!resultText.includes('✅')) throw new Error(`Form did not return success: ${resultText}`);
 
             const idMatch = resultText.match(/ID:\s*([a-z0-9\-]+)/i);
-            const newId = idMatch ? idMatch[1] : null;
+            newId = idMatch ? idMatch[1] : null;
             console.log('New ID:', newId);
-            if (!newId) { console.error('FAIL: Could not extract ID from result:', resultText); await browser.close(); process.exit(1); }
+            if (!newId) throw new Error(`Could not extract ID from result: ${resultText}`);
 
             // ── Step 5: Wait for auto-reload ──
             console.log('=== Step 5: Waiting for auto-reload ===');
@@ -585,7 +585,7 @@ jobs:
             const externosSection = bodyText.match(/EXTERNOS[\s\S]{0,800}/i);
             console.log('EXTERNOS section:', externosSection ? externosSection[0].slice(0, 400) : '(not found)');
 
-            // EXTERNOS group is collapsed by default — expand it first
+            // EXTERNOS group may be collapsed — expand it first
             console.log('Expanding EXTERNOS group...');
             const externosExpanded = await page.evaluate(() => {
               const headers = Array.from(document.querySelectorAll('.cat-header'));
@@ -607,11 +607,7 @@ jobs:
               els.some(el => el.textContent.includes('PlaywrightTestPerson'))
             ).catch(() => false);
             console.log('Subgroup header with persona found:', subgroupFound);
-            if (!subgroupFound) {
-              console.error('FAIL: EXTERNOS subgroup header for PlaywrightTestPerson not found in DOM');
-              await browser.close();
-              process.exit(1);
-            }
+            if (!subgroupFound) throw new Error('EXTERNOS subgroup header for PlaywrightTestPerson not found in DOM');
             console.log('PASS: EXTERNOS subcarpeta rendered correctly ✓');
 
             // ── Step 7: Verify total +1 ──
@@ -623,15 +619,11 @@ jobs:
               if (totalAfter === totalInit + 1) {
                 console.log('PASS: Total +1 ✓');
               } else {
-                console.error(`FAIL: Expected total ${totalInit + 1}, got ${totalAfter}`);
-                await browser.close();
-                process.exit(1);
+                throw new Error(`Expected total ${totalInit + 1}, got ${totalAfter}`);
               }
             } else {
               console.log('Warning: could not compare totals, skipping count check');
             }
-
-            await browser.close();
 
             // ── Step 8: Verify ID in gviz CSV ──
             console.log('=== Step 8: Verify ID in gviz CSV ===');
@@ -646,10 +638,9 @@ jobs:
                 else { console.log(`Attempt ${i+1}: ID not yet in CSV, waiting 4s...`); await new Promise(r => setTimeout(r, 4000)); }
               } catch(e) { console.log(`Attempt ${i+1}: gviz error: ${e.message}`); await new Promise(r => setTimeout(r, 4000)); }
             }
-            if (!idFound) { console.error(`FAIL: ID "${newId}" not found in gviz CSV`); process.exit(1); }
+            if (!idFound) throw new Error(`ID "${newId}" not found in gviz CSV after 5 attempts`);
             console.log(`PASS: ID "${newId}" confirmed in Sheet via gviz ✓`);
 
-            // Also verify cuantía in the CSV row
             const csvLines = csvAfter.split('\n');
             const ourRow = csvLines.find(l => l.includes(newId));
             console.log('Our CSV row:', ourRow ? ourRow.slice(0, 200) : '(not found)');
@@ -659,29 +650,20 @@ jobs:
               console.log(`Warning: cuantía ${TEST_CUANTIA} not clearly visible in CSV row`);
             }
 
-            // ── Step 9: DELETE test row via Web App ──
-            console.log('=== Step 9: Deleting test row ===');
-            try {
-              const delResp = await fetch(WEBAPP_URL, {
-                method: 'POST',
-                body: JSON.stringify({ token: WEBAPP_TOKEN, action: 'delete', id: newId })
-              });
-              const delData = await delResp.json();
-              console.log('Delete response:', JSON.stringify(delData));
-              if (delData.success && delData.deleted) {
-                console.log(`PASS: Test row "${newId}" deleted ✓`);
-              } else if (delData.success) {
-                console.log(`Warning: delete returned success but deleted=false (row may not have been found)`);
-              } else {
-                console.log(`Warning: delete failed: ${delData.error}`);
-              }
-            } catch(e) {
-              console.log(`Warning: could not delete test row: ${e.message}`);
-            }
-
             console.log('');
             console.log('ALL EXTERNOS TESTS PASSED ✓');
-          })();
+
+          } catch(e) {
+            console.error('FAIL:', e.message);
+            exitCode = 1;
+          } finally {
+            // ── Cleanup: always delete test row ──────────────────────────────
+            console.log('');
+            console.log('=== CLEANUP: Deleting test row ===');
+            await deleteRow(newId);
+            if (browser) await browser.close().catch(() => {});
+            process.exit(exitCode);
+          }
           PLAYWRIGHT_EOF
 
           # Cleanup
@@ -721,25 +703,29 @@ jobs:
           const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
           const SHEET_CSV    = 'https://docs.google.com/spreadsheets/d/15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts/gviz/tq?tqx=out:csv&gid=953772179';
 
-          (async () => {
-            const browser = await chromium.launch({ headless: true });
-            const page = await browser.newPage();
-
-            // ── Helper: fetch with retry ──────────────────────────────────
-            async function apiCall(body, label) {
-              for(let attempt=1; attempt<=3; attempt++){
-                try {
-                  const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(body) });
-                  const d = await r.json();
-                  console.log(`${label} [attempt ${attempt}]:`, JSON.stringify(d));
-                  return d;
-                } catch(e) {
-                  console.log(`${label} attempt ${attempt} failed: ${e.message}`);
-                  if(attempt<3) await new Promise(r=>setTimeout(r,2000));
-                }
+          async function apiCall(body, label) {
+            for(let attempt=1; attempt<=3; attempt++){
+              try {
+                const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(body) });
+                const d = await r.json();
+                console.log(`${label} [attempt ${attempt}]:`, JSON.stringify(d));
+                return d;
+              } catch(e) {
+                console.log(`${label} attempt ${attempt} failed: ${e.message}`);
+                if(attempt<3) await new Promise(r=>setTimeout(r,2000));
               }
-              throw new Error(`${label} failed after 3 attempts`);
             }
+            throw new Error(`${label} failed after 3 attempts`);
+          }
+
+          let browser;
+          let cerrId = null;
+          let borrarId = null;
+          let exitCode = 0;
+
+          try {
+            browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
 
             // ── Step 1: Create test case for "cerrar" test ───────────────
             console.log('=== Step 1: Creating test case for cerrar test ===');
@@ -754,11 +740,8 @@ jobs:
               notas: 'CI test cerrar caso'
             }, 'create-for-cerrar');
 
-            if(!cerrData.success || !cerrData.id) {
-              console.error('FAIL: Could not create test case for cerrar');
-              await browser.close(); process.exit(1);
-            }
-            const cerrId = cerrData.id;
+            if(!cerrData.success || !cerrData.id) throw new Error('Could not create test case for cerrar');
+            cerrId = cerrData.id;
             console.log(`PASS: Created case ${cerrId} for cerrar test ✓`);
 
             // ── Step 2: Create test case for "borrar" test ────────────────
@@ -771,13 +754,8 @@ jobs:
               notas: 'CI test borrar caso'
             }, 'create-for-borrar');
 
-            if(!borrarData.success || !borrarData.id) {
-              console.error('FAIL: Could not create test case for borrar');
-              // Cleanup cerrar case
-              await apiCall({ token: WEBAPP_TOKEN, action: 'delete', id: cerrId }, 'cleanup-cerr');
-              await browser.close(); process.exit(1);
-            }
-            const borrarId = borrarData.id;
+            if(!borrarData.success || !borrarData.id) throw new Error('Could not create test case for borrar');
+            borrarId = borrarData.id;
             console.log(`PASS: Created case ${borrarId} for borrar test ✓`);
 
             // ── Step 3: Close the cerrar case via API ─────────────────────
@@ -790,12 +768,7 @@ jobs:
               valor: 'cerrado'
             }, 'update-cerrado');
 
-            if(!updateData.success) {
-              console.error('FAIL: update action failed:', updateData.error);
-              await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: cerrId }, 'cleanup-cerr');
-              await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: borrarId }, 'cleanup-borr');
-              await browser.close(); process.exit(1);
-            }
+            if(!updateData.success) throw new Error(`update action failed: ${updateData.error}`);
             console.log(`PASS: update action success (updated=${updateData.updated}) ✓`);
 
             // ── Step 4: Verify "cerrado" in Sheet CSV ──────────────────────
@@ -815,14 +788,12 @@ jobs:
             await page.goto('http://localhost:8787', { waitUntil:'networkidle', timeout:30000 });
             await page.waitForTimeout(3000);
 
-            // Switch to Grupos view
             const gruposBtn = page.locator('button, [onclick*="grupos"], [data-view="grupos"]').filter({ hasText: /grupo/i }).first();
             if(await gruposBtn.count() > 0){
               await gruposBtn.click();
               await page.waitForTimeout(1000);
             }
 
-            // Check for CASOS CERRADOS header
             const cerrHeader = page.locator('text=CASOS CERRADOS');
             const cerrVisible = await cerrHeader.count() > 0;
             console.log(`PASS: CASOS CERRADOS group visible: ${cerrVisible} ✓`);
@@ -832,16 +803,21 @@ jobs:
             const trashBtns = await page.locator('.btn-trash').count();
             console.log(`PASS: Found ${trashBtns} trash buttons ✓`);
 
-            // ── Step 7: Cleanup — delete both test cases via API ──────────
-            console.log('=== Step 7: Cleanup — deleting test cases ===');
-            const del1 = await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: cerrId }, 'delete-cerr');
-            const del2 = await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: borrarId }, 'delete-borr');
-            console.log(`PASS: Cleanup done (cerr deleted=${del1.deleted}, borr deleted=${del2.deleted}) ✓`);
-
-            await browser.close();
             console.log('');
             console.log('ALL TRASH/CERRAR TESTS PASSED ✓');
-          })();
+
+          } catch(e) {
+            console.error('FAIL:', e.message);
+            exitCode = 1;
+          } finally {
+            // ── Cleanup: always delete both test cases ────────────────────
+            console.log('');
+            console.log('=== CLEANUP: Deleting test cases ===');
+            if (cerrId)   await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: cerrId },   'cleanup-cerr').catch(e => console.log('cleanup-cerr failed:', e.message));
+            if (borrarId) await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: borrarId }, 'cleanup-borr').catch(e => console.log('cleanup-borr failed:', e.message));
+            if (browser) await browser.close().catch(() => {});
+            process.exit(exitCode);
+          }
           PLAYWRIGHT_EOF
 
           # Cleanup
@@ -881,24 +857,28 @@ jobs:
           const WEBAPP_TOKEN = 'vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc';
           const SHEET_CSV    = 'https://docs.google.com/spreadsheets/d/15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts/gviz/tq?tqx=out:csv&gid=953772179';
 
-          (async () => {
-            const browser = await chromium.launch({ headless: true });
-            const page = await browser.newPage();
-
-            async function apiCall(body, label) {
-              for(let attempt=1; attempt<=3; attempt++){
-                try {
-                  const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(body) });
-                  const d = await r.json();
-                  console.log(`${label} [attempt ${attempt}]:`, JSON.stringify(d));
-                  return d;
-                } catch(e) {
-                  console.log(`${label} attempt ${attempt} failed: ${e.message}`);
-                  if(attempt<3) await new Promise(r=>setTimeout(r,2000));
-                }
+          async function apiCall(body, label) {
+            for(let attempt=1; attempt<=3; attempt++){
+              try {
+                const r = await fetch(WEBAPP_URL, { method:'POST', body: JSON.stringify(body) });
+                const d = await r.json();
+                console.log(`${label} [attempt ${attempt}]:`, JSON.stringify(d));
+                return d;
+              } catch(e) {
+                console.log(`${label} attempt ${attempt} failed: ${e.message}`);
+                if(attempt<3) await new Promise(r=>setTimeout(r,2000));
               }
-              throw new Error(`${label} failed after 3 attempts`);
             }
+            throw new Error(`${label} failed after 3 attempts`);
+          }
+
+          let browser;
+          let pendId = null;
+          let exitCode = 0;
+
+          try {
+            browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
 
             // ── Step 1: Create a PENDIENTES case ─────────────────────────
             console.log('=== Step 1: Creating PENDIENTES test case ===');
@@ -911,11 +891,8 @@ jobs:
               notas: 'CI test activar pendiente'
             }, 'create-pendiente');
 
-            if(!pendData.success || !pendData.id) {
-              console.error('FAIL: Could not create PENDIENTES test case');
-              await browser.close(); process.exit(1);
-            }
-            const pendId = pendData.id;
+            if(!pendData.success || !pendData.id) throw new Error('Could not create PENDIENTES test case');
+            pendId = pendData.id;
             console.log(`PASS: Created pendiente case ${pendId} ✓`);
 
             // ── Step 2: Update jurisdicción via API (simulates activar) ───
@@ -928,11 +905,7 @@ jobs:
               valor: 'CIVIL'
             }, 'update-jurisdiccion');
 
-            if(!updData.success) {
-              console.error('FAIL: update jurisdiccion failed:', updData.error);
-              await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: pendId }, 'cleanup');
-              await browser.close(); process.exit(1);
-            }
+            if(!updData.success) throw new Error(`update jurisdiccion failed: ${updData.error}`);
             console.log(`PASS: update jurisdiccion success (updated=${updData.updated}) ✓`);
 
             // ── Step 3: Verify jurisdicción in CSV ────────────────────────
@@ -953,15 +926,20 @@ jobs:
             const activarOverlay = await page.locator('#activar-overlay').count();
             console.log(`PASS: #activar-overlay in DOM: ${activarOverlay > 0} ✓`);
 
-            // ── Step 5: Cleanup ───────────────────────────────────────────
-            console.log('=== Step 5: Cleanup — deleting test case ===');
-            const delData = await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: pendId }, 'delete-pend');
-            console.log(`PASS: Cleanup done (deleted=${delData.deleted}) ✓`);
-
-            await browser.close();
             console.log('');
             console.log('ALL ACTIVAR PENDIENTE TESTS PASSED ✓');
-          })();
+
+          } catch(e) {
+            console.error('FAIL:', e.message);
+            exitCode = 1;
+          } finally {
+            // ── Cleanup: always delete test case ─────────────────────────
+            console.log('');
+            console.log('=== CLEANUP: Deleting test case ===');
+            if (pendId) await apiCall({ token: WEBAPP_TOKEN, action:'delete', id: pendId }, 'cleanup-pend').catch(e => console.log('cleanup-pend failed:', e.message));
+            if (browser) await browser.close().catch(() => {});
+            process.exit(exitCode);
+          }
           PLAYWRIGHT_EOF
 
           # Cleanup
