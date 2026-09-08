@@ -189,6 +189,7 @@ jobs:
             }
           }
 
+          (async () => {
           let browser;
           let newId = null;
           let exitCode = 0;
@@ -384,6 +385,7 @@ jobs:
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
+          })();
           PLAYWRIGHT_EOF
 
           kill $HTTP_PID 2>/dev/null || true
@@ -454,6 +456,7 @@ jobs:
             }
           }
 
+          (async () => {
           let browser;
           let newId    = null;
           let exitCode = 0;
@@ -628,6 +631,7 @@ jobs:
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
+          })();
           PLAYWRIGHT_EOF
 
           kill $HTTP_PID 2>/dev/null || true
@@ -694,6 +698,7 @@ jobs:
             throw new Error(`${label} failed after 3 attempts`);
           }
 
+          (async () => {
           let browser;
           let cerrId   = null;
           let borrarId = null;
@@ -793,6 +798,7 @@ jobs:
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
+          })();
           PLAYWRIGHT_EOF
 
           kill $HTTP_PID 2>/dev/null || true
@@ -859,6 +865,7 @@ jobs:
             throw new Error(`${label} failed after 3 attempts`);
           }
 
+          (async () => {
           let browser;
           let pendId   = null;
           let exitCode = 0;
@@ -926,6 +933,7 @@ jobs:
             if (browser) await browser.close().catch(() => {});
             process.exit(exitCode);
           }
+          })();
           PLAYWRIGHT_EOF
 
           kill $HTTP_PID 2>/dev/null || true
