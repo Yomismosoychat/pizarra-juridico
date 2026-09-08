@@ -582,6 +582,17 @@ function handleSearchInput(){
   _searchTimer = setTimeout(render, 220);
 }
 
+// ── Normalización sin acentos ─────────────────────────────────────────────────
+function normText(s){
+  return (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase();
+}
+function caseSearchText(c){
+  var parts = [c.name, c.ref, c.current, c.court||"", (CATS[c.cat]||{}).label||""];
+  (c.steps||[]).forEach(function(s){ parts.push(s.t||""); });
+  (c.exSteps||[]).forEach(function(s){ parts.push(s.t||""); });
+  return normText(parts.join(" "));
+}
+
 var SEARCH_HIST_KEY = "pizarraSearchHistory";
 function _getSearchHistory(){ try{ return JSON.parse(localStorage.getItem(SEARCH_HIST_KEY)||"[]"); }catch(e){ return []; } }
 function _saveSearchHistory(val){
@@ -650,13 +661,8 @@ function render(){
   const _selStart = (_active && typeof _active.selectionStart === "number") ? _active.selectionStart : null;
   const _selEnd   = (_active && typeof _active.selectionEnd   === "number") ? _active.selectionEnd   : null;
 
-  let cases = STATE.cases.filter(c => {
-    if(!filter) return true;
-    const q = filter.toLowerCase();
-    return c.name.toLowerCase().includes(q) || c.ref.toLowerCase().includes(q) ||
-           c.current.toLowerCase().includes(q) || (c.court||"").toLowerCase().includes(q) ||
-           (CATS[c.cat]||{}).label?.toLowerCase().includes(q);
-  });
+  const _fq = normText(filter);
+  let cases = STATE.cases.filter(c => !_fq || caseSearchText(c).includes(_fq));
 
   const urgent = cases.filter(c=>c.priority===1).length;
   const withTrial = cases.filter(c=>c.trial).length;
@@ -929,6 +935,7 @@ function renderCard(c, showCat){
 
 // ═══ TABLA VIEW ═══
 function renderTabla(cases){
+  if(segFilter.search){ const _tq=normText(segFilter.search); cases=cases.filter(c=>caseSearchText(c).includes(_tq)); }
   const fmtEuro = (n) => n.toLocaleString("es-ES",{minimumFractionDigits:0,maximumFractionDigits:0}) + "\u20AC";
   let grandTotal = 0;
   let h = `<div class="tabla-wrap"><table class="tabla">
@@ -1068,6 +1075,7 @@ function renderJuicios(cases){
 
 // ═══ RECLAMACIÓN VIEW ═══
 function renderReclamacion(cases){
+  if(segFilter.search){ const _rq=normText(segFilter.search); cases=cases.filter(c=>caseSearchText(c).includes(_rq)); }
   const allCases = STATE.cases;
   const totalReclamado = allCases.reduce((s,c)=>s+(c.amount||0),0);
   const totalGanado = allCases.reduce((s,c)=>s+(c.ganado||0),0);
@@ -1289,8 +1297,8 @@ function getFilteredComms(methodFilter){
   else if(segFilter.status === 'pending') filtered = filtered.filter(c => !c.responded);
   else if(segFilter.status === 'responded') filtered = filtered.filter(c => c.responded);
   if(segFilter.search){
-    const q = segFilter.search.toLowerCase();
-    filtered = filtered.filter(c => (c.subj||'').toLowerCase().includes(q) || (c.toLabel||'').toLowerCase().includes(q) || (c.to||'').toLowerCase().includes(q) || (c.caseName||'').toLowerCase().includes(q));
+    const _sq = normText(segFilter.search);
+    filtered = filtered.filter(c => normText([c.subj,c.toLabel,c.to,c.caseName].join(" ")).includes(_sq));
   }
   filtered.sort((a,b) => {
     if(a._alert && !b._alert) return -1;
