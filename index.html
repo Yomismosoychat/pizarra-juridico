@@ -1760,6 +1760,9 @@ const SHEET_CSV_URL_FALLBACK = "https://docs.google.com/spreadsheets/d/e/2PACX-1
 const WEBAPP_URL   = "https://script.google.com/macros/s/AKfycbyxEpXi44bsdVXy0ms25x8JzQGOwFcKNEWZnCUDos4lJRs0_tmgBk_eQcdofRsFqei_/exec";
 const WEBAPP_TOKEN = "vKPe__KvDIkkJ56R7bOQUaM7DuquoFcTS0zF9UC9Fjc";
 
+// ═══ APPS SCRIPT WEB APP — sync bidireccional ═══
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw5VUPfvxVDY5wd2gWnO73_VV3EP080HNUQCxTZfrI8FGSjkrykIbrAUXtvnPHk8T6n/exec';
+
 const SYNC_NEXT_MAP_REV = Object.fromEntries(Object.entries(SYNC_NEXT_MAP).map(([k,v])=>[normLabel(v),k]));
 const SYNC_STATUS_MAP_REV = Object.fromEntries(Object.entries(SYNC_STATUS_MAP).map(([k,v])=>[normLabel(v),k]));
 const CAT_LABEL_TO_KEY = (()=>{
@@ -1961,6 +1964,27 @@ async function loadFromSheet(){
     if(statusEl) statusEl.textContent = "❌ Error";
     console.error("loadFromSheet:", errDetail, "url:", urlUsed);
   }
+}
+
+// ═══ SYNC SHEET (📤 escritura bidireccional hacia el Sheet) ═══
+async function syncSheet() {
+  const rows = getAllRows(); // obtiene los datos actuales de la tabla en memoria
+  let ok = 0, err = 0;
+  for (const row of rows) {
+    try {
+      const res = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        body: JSON.stringify({
+          modo: 'actualizar_fila',
+          fila: row.filaSheet, // número de fila en el Sheet (col A = ID)
+          datos: rowToSheetCols(row)
+        })
+      });
+      const json = await res.json();
+      if (json.ok) ok++; else err++;
+    } catch(e) { err++; }
+  }
+  alert('Sync completado: ' + ok + ' filas actualizadas, ' + err + ' errores.');
 }
 
 // ═══ TOAST ═══
