@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Google_Drive__search_files",
+      "mcp__Google_Drive__list_recent_files",
+      "mcp__Google_Drive__read_file_content",
+      "mcp__Google_Drive__get_file_metadata",
+      "mcp__Google_Drive__get_file_permissions",
+      "mcp__JURISPRUDENCIATOR__buscar_sentencias",
+      "mcp__JURISPRUDENCIATOR__leer_sentencias",
+      "mcp__JURISPRUDENCIATOR__buscar_articulo",
+      "mcp__JURISPRUDENCIATOR__buscar_boe",
+      "mcp__JURISPRUDENCIATOR__buscar_por_cita",
+      "mcp__JURISPRUDENCIATOR__estado",
+      "mcp__JURISPRUDENCIATOR__continuar_lectura",
+      "mcp__JURISPRUDENCIATOR__opciones_busqueda",
+      "mcp__JURISPRUDENCIATOR__buscar_consultas_hacienda",
+      "mcp__JURISPRUDENCIATOR__leer_consulta_hacienda",
+      "mcp__JURISPRUDENCIATOR__buscar_doctrina_teac",
+      "mcp__JURISPRUDENCIATOR__leer_resolucion_teac",
+      "mcp__JURISPRUDENCIATOR__novedades_boe",
+      "mcp__JURISPRUDENCIATOR__sumario_boe",
+      "mcp__JURISPRUDENCIATOR__verificar_escrito"
+    ]
+  }
+}
