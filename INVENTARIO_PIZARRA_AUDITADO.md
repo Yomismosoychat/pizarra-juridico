@@ -1,6 +1,7 @@
 # INVENTARIO PIZARRA JURÍDICA — AUDITORÍA TÉCNICA
-**Generado:** 2026-10-21 · Rama activa: `claude/compact-mode-rbttdt`  
-**Auditor:** Claude Code (sesión automática nocturna)
+**Generado:** 2026-10-21 · Actualizado: 2026-10-21 (post-Antigravity)  
+**Rama activa:** `claude/compact-mode-rbttdt`  
+**Estado consolidación:** ✅ 53 expedientes sincronizados · 19 actuaciones insertadas
 
 ---
 
@@ -85,65 +86,82 @@
 
 ## 3. AUDITORÍA DE CLAVES — FASTMCP vs APP
 
-### 3.1 Claves esperadas por FastMCP (`server.py` local)
+### 3.1 Mapeo técnico certificado por Antigravity (`cargar_pizarra.py`)
 
-Según la modificación aplicada en la sesión anterior a `C:\Titan\local-stack\server.py`:
+| Campo FastMCP (`actualizar_pizarra`) | Equivalente App JS | Col. Sheet | Tipo | Estado |
+|---|---|---|---|---|
+| `proxima_actuacion` | _(texto descriptivo)_ | — | `str` — descripción textual de la próxima acción | ✅ CERTIFICADO |
+| `fecha_limite` | `c.nextDate` | K "Fecha límite" | `str` YYYY-MM-DD — vencimiento procesal fatal | ✅ CERTIFICADO |
+| `c_trial` | `c.trial` | G "Fecha actuación" | `str` YYYY-MM-DD — fecha de juicio/vista | ✅ CERTIFICADO |
+| `c_nextDate` | `c.nextDate` | K "Fecha límite" | `str` YYYY-MM-DD — idéntico a `fecha_limite` | ✅ CERTIFICADO |
+| `alerta` | _(no en App JS todavía)_ | M "ALERTA" | `str` — notificaciones eNotum/DEHú | ✅ CERTIFICADO |
+| `drive_url` | — | — | `None` para fuentes no Drive (Gmail, eNotum, DEHú, OAC, local) | ✅ CERTIFICADO |
 
-| Campo FastMCP | Equivalente App JS | Fuente Sheet | Estado |
-|---|---|---|---|
-| `proxima_actuacion` | `c.nextDate` (cuando `nextType="actuar"`) | Col. K "Fecha límite" | ⚠️ VERIFICAR: puede ser col. G o col. K según implementación |
-| `fecha_limite` | `c.nextDate` | Col. K "Fecha límite" | ✅ Coherente |
-| `nextType` | `c.nextType` | Col. I "Tipo tarea" | ✅ Coherente |
-| `nextDate` | `c.nextDate` | Col. K "Fecha límite" | ✅ Coherente |
+**Resolución de ambigüedad §3.2 (anterior):** `proxima_actuacion` es un **texto libre descriptivo** (ej: "Examinar diligencia 315749249..."), NO una fecha. La fecha va en `fecha_limite` / `c_nextDate`. Los dos campos son funcionalmente distintos.
 
-### 3.2 ⚠️ AMBIGÜEDAD DETECTADA: `proxima_actuacion`
+### 3.2 Herramientas MCP utilizadas por `cargar_pizarra.py`
 
-La app JS usa un único campo `c.nextDate` para dos conceptos distintos:
-- Fecha límite de una tarea de tipo "actuar" (col. K)
-- Fecha de cualquier próxima actuación
+| Herramienta | Propósito |
+|---|---|
+| `actualizar_pizarra` | Upsert de expediente completo con todos sus campos |
+| `insertar_actuacion` | Inserción de actuación/notificación individual |
 
-FastMCP tiene `proxima_actuacion` Y `fecha_limite` como campos separados.  
-**Riesgo:** si FastMCP mapea `proxima_actuacion` a col. G (Fecha actuación/juicio = `c.trial`) y `fecha_limite` a col. K (`c.nextDate`), la integración es correcta. Si ambos mapean a col. K, hay redundancia.
+### 3.3 Integración eNotum / DEHú — CONFIRMADA ✅
 
-**Acción recomendada:** Verificar en `server.py` local:
-```python
-# Debe ser:
-"proxima_actuacion": row.get("fecha_actuacion"),  # col G → c.trial
-"fecha_limite":      row.get("fecha_limite"),      # col K → c.nextDate
-```
+Las alertas de sedes electrónicas **SÍ están integradas** en TITÁN vía campo `alerta` (Col. M) y actuaciones de tipo `ALERTA_DEHU` / `ALERTA_ENOTUM` en `cargar_pizarra.py`.
 
-### 3.3 Campos eNotum / DEHú
+Ejemplo confirmado (`civ6-quiero`):
+- DEHú id 155 → `ALERTA_DEHU` → 2026-09-24 — SCiv Pl. 06 TGN 993/2026-M56
+- eNotum id 156 → `ALERTA_ENOTUM` → 2026-09-24 — Avís notificació SECR. RELACIONS AMB L'ADM. JUSTÍCIA
 
-**No hay integración con eNotum o DEHú en el código actual del repositorio.**  
-La columna M del Sheet ("ALERTA") no se importa en la app JS.  
-**Gap identificado:** Las notificaciones electrónicas de juzgados no están siendo ingestadas ni mostradas en la pizarra.
+**Gap parcial:** El campo `alerta` de la App JS (Pizarra web) no se renderiza en las tarjetas todavía — solo existe en PostgreSQL/FastMCP.
 
 ---
 
-## 4. ALERTAS PROCESALES ACTIVAS — ESTRUCTURA (sin datos en vivo)
+## 4. ALERTAS PROCESALES ACTIVAS — ORDENADAS POR RIESGO Y FECHA
 
-La app identifica casos urgentes con `priority=1` (`nextType="actuar"`).  
-La función que genera alertas automáticas está en el bloque `checkAutoAlerts()`:
+Datos certificados por Antigravity · 2026-10-21 · Total: 53 expedientes, 19 actuaciones
 
-```javascript
-// Activación: c.steps contiene "INFORME FORENSE APORTADO"
-// Efecto: c.nextType = 'actuar', c.current = '⚠️ REDACTAR ESCRITO...'
-```
+### 4.1 PRIORIDAD ROJO (acción inmediata)
 
-**Para obtener el listado real de alertas activas**, ejecutar desde Antigravity:
-```python
-# Consulta PostgreSQL TITÁN:
-SELECT id, tema, jurisdiccion, fecha_limite, proxima_actuacion, estado
-FROM expedientes
-WHERE estado NOT IN ('cerrado', 'ganado', 'perdido')
-  AND (fecha_limite IS NOT NULL OR proxima_actuacion IS NOT NULL)
-ORDER BY COALESCE(fecha_limite, proxima_actuacion) ASC;
-```
+| Expediente | Próxima actuación | Fecha límite | Alerta |
+|---|---|---|---|
+| `rp-reus` | Verificar actuación sobre fecha límite ya vencida | **2026-10-20** ⛔ VENCIDA | Presentación pendiente de verificar |
+| `civ8-caxa` | Examinar diligencia 315749249 | **2026-10-20** | Acceso no acreditado |
+| `civ3-port` | Examinar decreto admisión notif. 317916366 | **2026-10-22** | Contenido íntegro pendiente |
+| `soc2-pension` | Examinar providencia 318932486 + diligencia 318991338 | **2026-10-26** | Dos notificaciones distintas |
+| `cont1-torre` | Examinar diligencia + traslado expediente adm. | **2026-10-26** | Contenido pendiente |
+| `cont3-bcn-189-2014` | Contrastar requerimiento judicial (posible plazo 3 días) | _no determinada_ | Plazo declarado en correo, no acreditado |
+| `pen-tsjc` | Preparar recurso de súplica ante TSJC | — | — |
+| `pen-imput` | Seguimiento Juzgado Guardia, FGE y Fiscalía Superior | — | — |
 
-O desde Google Sheet (gviz CSV directo):
-```
-https://docs.google.com/spreadsheets/d/15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUlzts/gviz/tq?tqx=out:csv&gid=953772179
-```
+### 4.2 PRIORIDAD NARANJA
+
+| Expediente | Próxima actuación | Fecha límite | Alerta |
+|---|---|---|---|
+| `rp-imput` | Seguimiento reclamación patrimonial | **2026-10-28** | — |
+| `zar-9550871-6` | Comprobar remisión postal del poder | _no determinada_ | Posible incidencia documental |
+
+### 4.3 PRIORIDAD MEDIA con fecha
+
+| Expediente | Próxima actuación | Fecha límite | Alerta |
+|---|---|---|---|
+| `civ6-quiero` | Esperar resolución | **2026-11-30** | DEHú id 155 + eNotum id 156 |
+
+### 4.4 Juicios señalados (c_trial)
+
+| Expediente | Fecha juicio |
+|---|---|
+| `soc3-brecha` | 2028-05-30 |
+| `soc2-paro` | 2027-07-07 |
+
+### 4.5 Expedientes PENDIENTES DE INICIAR
+
+| Expediente | Próxima actuación |
+|---|---|
+| `pend-caida` | Preparar y registrar denuncia por caída |
+| `pend-medico` | Preparar y registrar denuncia médica |
+| `pend-inss` | Preparar denuncia contra INSS |
 
 ---
 
@@ -196,12 +214,26 @@ https://docs.google.com/spreadsheets/d/15W3aYgk2m6kqKlbl8TNcB2V38-QmFusaFwrm9gUl
 
 ## 8. CHECKLIST PARA MAÑANA (ANTIGRAVITY)
 
-- [ ] Verificar `proxima_actuacion` en `server.py`: ¿mapea a col G o col K?
-- [ ] Ejecutar query de alertas activas en PostgreSQL TITÁN (ver §4)
-- [ ] Confirmar que los 5 jobs CI están verdes en la rama `claude/compact-mode-rbttdt`
-- [ ] Implementar `getAllRows()` y `rowToSheetCols()` antes de activar `syncSheet()`
+### Completado en sesión nocturna ✅
+- [x] Mapeo técnico Coword certificado (`proxima_actuacion` = texto, `fecha_limite` = Col K, `c_trial` = Col G)
+- [x] 53 expedientes sincronizados a PostgreSQL TITÁN
+- [x] 19 actuaciones insertadas (incl. 2 alertas DEHú/eNotum de `civ6-quiero`)
+- [x] `cargar_pizarra.py` validado y ejecutado
+
+### Pendiente — App JS (Pizarra web)
+- [ ] Implementar `getAllRows()` y `rowToSheetCols()` para activar `syncSheet()`
 - [ ] Añadir botón "📤 Sync Sheet" al topbar de `index.html`
-- [ ] Verificar que columna M ("ALERTA") del Sheet no contiene alertas eNotum/DEHú sin procesar
+- [ ] Renderizar campo `alerta` (Col M) en las tarjetas de la Pizarra web
+
+### Pendiente — CI/CD
+- [ ] Confirmar que los 5 jobs CI están verdes en la rama `claude/compact-mode-rbttdt`
+- [ ] Mergear commits `2a78e24`, `73f270b`, `a2932b4` de `claude/pizarra-juridico-sheets-4jcjoc` a producción
+
+### Acción procesal urgente
+- [ ] **`rp-reus`** — fecha límite 2026-10-20 **YA VENCIDA** → verificar si presentación fue realizada
+- [ ] **`civ8-caxa`** — examinar diligencia 315749249 (límite 2026-10-20)
+- [ ] **`civ3-port`** — examinar notif. 317916366 (límite 2026-10-22)
+- [ ] **`soc2-pension`** + **`cont1-torre`** — examinar notificaciones (límite 2026-10-26)
 
 ---
 
