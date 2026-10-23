@@ -2,7 +2,6 @@
 # INSTALADOR_MAESTRO_TITAN.ps1 — Despliegue en 1 clic
 # Sistema TITAN · 2026-10-23 · Ejecutar como Administrador
 # =====================================================================
-#Requires -RunAsAdministrator
 $ErrorActionPreference = "Stop"
 $TitanRoot  = "C:\Titan"
 $PgUser     = "titan_local"
