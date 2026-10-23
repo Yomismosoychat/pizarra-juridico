@@ -586,8 +586,8 @@ foreach ($pid in $portProc) {
 
 # Arrancar titan_pizarra_server.py en background
 Log "Arrancando titan_pizarra_server.py en background (puerto 8765)..."
-$pythonExe = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-if (-not $pythonExe) { $pythonExe = "python3" }
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+$pythonExe = if ($pythonCmd) { $pythonCmd.Source } else { "python3" }
 
 $pizarraScript = "$TitanRoot\titan_pizarra_server.py"
 $logFile       = "$TitanRoot\logs\pizarra_server.log"
@@ -633,9 +633,9 @@ if ($ready) {
 # RESUMEN FINAL
 # ─────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  INSTALADOR MAESTRO TITÁN — COMPLETADO               " -ForegroundColor Cyan
+Write-Host "=======================================================" -ForegroundColor Cyan
+Write-Host "  INSTALADOR MAESTRO TITAN -- COMPLETADO              " -ForegroundColor Cyan
 Write-Host "  Pizarra: http://127.0.0.1:8765/                     " -ForegroundColor Yellow
 Write-Host "  FastMCP: http://127.0.0.1:18080/  (docker $McpContainer)" -ForegroundColor Yellow
 Write-Host "  Log:     $TitanRoot\logs\pizarra_server.log         " -ForegroundColor Gray
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "=======================================================" -ForegroundColor Cyan
